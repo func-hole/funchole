@@ -1,0 +1,36 @@
+plugins {
+    id 'org.springframework.boot' version '3.5.16'
+}
+
+description = 'Runnable Spring Boot API application.'
+
+dependencies {
+    implementation project(':core')
+
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.flywaydb:flyway-core'
+    implementation 'org.flywaydb:flyway-database-postgresql'
+
+    runtimeOnly 'org.postgresql:postgresql'
+
+    developmentOnly 'org.springframework.boot:spring-boot-devtools'
+
+    testImplementation 'org.springframework.boot:spring-boot-testcontainers'
+    testImplementation 'org.testcontainers:junit-jupiter'
+    testImplementation 'org.testcontainers:postgresql'
+}
+
+springBoot {
+    mainClass = 'com.funchole.backend.api.FuncHoleBackendApplication'
+}
+
+tasks.named('bootJar') {
+    archiveFileName = 'funchole-api.jar'
+}
+
+tasks.named('jar') {
+    enabled = false
+}

@@ -1,0 +1,50 @@
+spring:
+  application:
+    name: funchole-backend
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/funchole}
+    username: ${DB_USERNAME:funchole}
+    password: ${DB_PASSWORD:funchole}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+        format_sql: true
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  docker:
+    compose:
+      enabled: false
+
+server:
+  port: ${SERVER_PORT:8080}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: when_authorized
+  info:
+    env:
+      enabled: true
+
+info:
+  app:
+    name: ${spring.application.name}
+    description: FuncHole backend bootstrap API
+    version: ${APP_VERSION:0.1.0-SNAPSHOT}
+
+logging:
+  level:
+    org.springframework.web: INFO
