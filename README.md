@@ -172,6 +172,8 @@ Admin / CLI / API
 
 The Control Plane is independently deployable from the Gateway.
 
+Because the Control Plane now runs on **Spring Boot 4.1.1**, Flyway auto-migration support is enabled through `spring-boot-starter-flyway`. Using only `flyway-core` is not enough in Boot 4.x if you expect migrations to run automatically at startup.
+
 ---
 
 # Gateway
@@ -952,6 +954,8 @@ Dockerfile
 ```
 
 This allows both applications to share common JDK/JRE build definitions while remaining independently deployable.
+
+To reduce rebuild time, the Dockerfile now copies Gradle metadata before service source code and uses a Gradle cache mount during build steps. On September 2, 2026, this is the main optimization in place for local Docker rebuild speed.
 
 Conceptually:
 

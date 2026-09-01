@@ -33,8 +33,10 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics,prometheus
+        include: health,info,metrics,prometheus,flyway
   endpoint:
+    flyway:
+      access: read_only
     health:
       probes:
         enabled: true
@@ -51,6 +53,8 @@ info:
 
 logging:
   level:
+    org.flywaydb: DEBUG
+    org.springframework.boot.flyway.autoconfigure: DEBUG
     org.springframework.web: INFO
     org.springframework.security: INFO
 

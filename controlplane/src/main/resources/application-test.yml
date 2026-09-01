@@ -1,10 +1,17 @@
 spring:
-  datasource:
-    url: jdbc:postgresql://localhost:5432/funchole
-    username: test
-    password: test
   flyway:
     enabled: true
   jpa:
     hibernate:
       ddl-auto: validate
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: flyway
+
+logging:
+  level:
+    org.flywaydb: DEBUG
+    org.springframework.boot.flyway.autoconfigure: DEBUG

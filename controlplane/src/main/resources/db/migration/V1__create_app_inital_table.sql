@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS app_metadata (
+CREATE TABLE app_metadata (
     id UUID PRIMARY KEY,
     key VARCHAR(100) NOT NULL UNIQUE,
     value TEXT NOT NULL,
@@ -11,7 +11,7 @@ VALUES ('11111111-1111-1111-1111-111111111111', 'bootstrap.version', '0.1.0')
 ON CONFLICT (key) DO NOTHING;
 
 
-CREATE TABLE app_user (
+CREATE TABLE app_users (
     id UUID PRIMARY KEY,
     username VARCHAR(100) NOT NULL,
     email VARCHAR(255) NOT NULL,
@@ -24,9 +24,9 @@ CREATE TABLE app_user (
     CONSTRAINT uk_app_user_email UNIQUE (email)
 );
 
-CREATE INDEX idx_app_user_created_at ON app_user (created_at);
+CREATE INDEX idx_app_user_created_at ON app_users (created_at);
 
-INSERT INTO app_user (
+INSERT INTO app_users (
     id,
     username,
     email,
@@ -44,33 +44,33 @@ VALUES (
 )
 ON CONFLICT (username) DO NOTHING;
 
-CREATE TABLE domain (
+CREATE TABLE app_domains (
     id UUID PRIMARY KEY,
-    user_id UUID NOT NULL REFERENCES app_user(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    app_user_id UUID NOT NULL REFERENCES app_users(id) ON DELETE CASCADE ON UPDATE CASCADE,
     domain_name VARCHAR(255) NOT NULL,
     verification_code VARCHAR(255) NOT NULL,
     status VARCHAR(20) NOT NULL DEFAULT 'pending',
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT uk_domain_name UNIQUE (domain_name)
-)
+);
 
-CREATE TABLE gateway (
+CREATE TABLE gateways (
     id UUID PRIMARY KEY,
-    user_id UUID NOT NULL REFERENCES app_user(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    app_user_id UUID NOT NULL REFERENCES app_users(id) ON DELETE CASCADE ON UPDATE CASCADE,
     name VARCHAR(100) NOT NULL,
     unique_key VARCHAR(64) NOT NULL UNIQUE,
     description TEXT,
-    domain_id UUID NOT NULL REFERENCES DOMAIN(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    app_domain_id UUID NOT NULL REFERENCES app_domains(id) ON DELETE CASCADE ON UPDATE CASCADE,
     status VARCHAR(20) NOT NULL DEFAULT 'active',
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT uk_gateway_unique_key UNIQUE (unique_key)
 );
 
-CREATE TABLE certificate (
+CREATE TABLE certificates (
     id UUID PRIMARY KEY,
-    gateway_id UUID NOT NULL REFERENCES gateway(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    gateway_id UUID NOT NULL REFERENCES gateways(id) ON DELETE CASCADE ON UPDATE CASCADE,
     hostname VARCHAR(255) NOT NULL,
     wildcard_hostname VARCHAR(255),
     provider VARCHAR(100) NOT NULL,

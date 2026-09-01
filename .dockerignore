@@ -5,3 +5,5 @@ build
 .idea
 .vscode
 README.md
+*.log
+*.out
