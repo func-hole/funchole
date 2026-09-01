@@ -3,6 +3,7 @@ package com.funchole.backend.controlplane.controller;
 import com.funchole.backend.controlplane.dto.AuthRequest;
 import com.funchole.backend.controlplane.dto.AuthTokenResponse;
 import com.funchole.backend.controlplane.mapper.AuthTokenMapper;
+import com.funchole.backend.controlplane.security.AppUserPrincipal;
 import com.funchole.backend.controlplane.security.JwtService;
 import com.funchole.backend.controlplane.security.JwtToken;
 import com.funchole.backend.core.base.response.ApiResponse;
@@ -39,7 +40,8 @@ public class AuthController {
                 UsernamePasswordAuthenticationToken.unauthenticated(request.username(), request.password())
         );
 
-        JwtToken jwtToken = jwtService.generateToken(authentication.getName());
+        AppUserPrincipal principal = (AppUserPrincipal) authentication.getPrincipal();
+        JwtToken jwtToken = jwtService.generateToken(principal.getId(), principal.getUsername());
         return ApiResponse.success(authTokenMapper.toResponse(jwtToken));
     }
 }

@@ -9,6 +9,7 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.Date;
+import java.util.UUID;
 import java.util.function.Function;
 import javax.crypto.SecretKey;
 import org.springframework.stereotype.Service;
@@ -16,18 +17,21 @@ import org.springframework.stereotype.Service;
 @Service
 public class JwtService {
 
+    private static final String USER_ID_CLAIM = "userId";
+
     private final SecurityProperties securityProperties;
 
     public JwtService(SecurityProperties securityProperties) {
         this.securityProperties = securityProperties;
     }
 
-    public JwtToken generateToken(String username) {
+    public JwtToken generateToken(UUID userId, String username) {
         Instant issuedAt = Instant.now();
         Instant expiresAt = issuedAt.plusSeconds(securityProperties.jwt().expirationSeconds());
 
         String token = Jwts.builder()
                 .subject(username)
+                .claim(USER_ID_CLAIM, userId.toString())
                 .issuedAt(Date.from(issuedAt))
                 .expiration(Date.from(expiresAt))
                 .signWith(signingKey())
@@ -42,6 +46,11 @@ public class JwtService {
 
     public String extractUsername(String token) {
         return extractClaim(token, Claims::getSubject);
+    }
+
+    public UUID extractUserId(String token) {
+        String userId = extractClaim(token, claims -> claims.get(USER_ID_CLAIM, String.class));
+        return userId == null ? null : UUID.fromString(userId);
     }
 
     public boolean isTokenValid(String token, String username) {

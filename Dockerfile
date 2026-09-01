@@ -48,3 +48,39 @@ COPY docker/gateway-entrypoint.sh /opt/funchole/entrypoint.sh
 RUN chmod +x /opt/funchole/entrypoint.sh
 EXPOSE 7081
 ENTRYPOINT ["/opt/funchole/entrypoint.sh"]
+
+FROM eclipse-temurin:25-jdk AS dev-base-common
+WORKDIR /workspace
+ENV GRADLE_USER_HOME=/opt/gradle-home
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl jq \
+    && rm -rf /var/lib/apt/lists/*
+COPY gradlew gradlew.bat settings.gradle build.gradle gradle.properties /workspace/
+COPY gradle /workspace/gradle
+COPY core/build.gradle /workspace/core/build.gradle
+COPY controlplane/build.gradle /workspace/controlplane/build.gradle
+COPY gateway/build.gradle /workspace/gateway/build.gradle
+COPY invocation/build.gradle /workspace/invocation/build.gradle
+COPY runtime/build.gradle /workspace/runtime/build.gradle
+COPY core/src /workspace/core/src
+COPY controlplane/src /workspace/controlplane/src
+COPY gateway/src /workspace/gateway/src
+COPY invocation/src /workspace/invocation/src
+COPY runtime/src /workspace/runtime/src
+COPY docker /workspace/docker
+COPY docker/openbao-common.sh /opt/funchole/openbao-common.sh
+COPY docker/watch-and-run.sh /opt/funchole/watch-and-run.sh
+RUN chmod +x /workspace/gradlew \
+    /opt/funchole/openbao-common.sh \
+    /opt/funchole/watch-and-run.sh \
+    && mkdir -p /opt/gradle-home \
+    && ./gradlew --version \
+    && ./gradlew :controlplane:dependencies :gateway:dependencies --no-daemon >/dev/null 2>&1 || true
+
+FROM dev-base-common AS dev-controlplane
+COPY docker/controlplane-dev-entrypoint.sh /opt/funchole/controlplane-dev-entrypoint.sh
+RUN chmod +x /opt/funchole/controlplane-dev-entrypoint.sh
+
+FROM dev-base-common AS dev-gateway
+COPY docker/gateway-dev-entrypoint.sh /opt/funchole/gateway-dev-entrypoint.sh
+RUN chmod +x /opt/funchole/gateway-dev-entrypoint.sh

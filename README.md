@@ -843,6 +843,22 @@ A dedicated framework-independent `certificate` module is part of the planned ar
 
 # Local Development
 
+The current `docker-compose.yml` is intentionally a development environment.
+
+It is optimized for:
+
+* local PostgreSQL;
+* local OpenBao secret bootstrap;
+* local application containers for end-to-end verification.
+
+It is not yet intended to be the final production deployment definition.
+
+For the Docker-only development workflow, use the separate development compose file:
+
+```bash
+docker compose -f docker-compose.dev.yml up -d --build
+```
+
 ## Requirements
 
 You should have:
@@ -861,6 +877,12 @@ available locally.
 docker compose up -d db
 ```
 
+For development-oriented Docker usage, prefer:
+
+```bash
+docker compose -f docker-compose.dev.yml up -d db
+```
+
 ---
 
 ## Start PostgreSQL and OpenBao
@@ -869,13 +891,42 @@ docker compose up -d db
 docker compose up -d db openbao
 ```
 
+If you want the full local secret bootstrap flow:
+
+```bash
+docker compose up -d db openbao openbao-init
+```
+
+Development in Docker should normally use:
+
+```bash
+docker compose -f docker-compose.dev.yml up -d --build
+```
+
+If you change files under `docker/openbao-init/secrets`, rerun the seeding step:
+
+```bash
+docker compose -f docker-compose.dev.yml up openbao-init
+```
+
 ---
 
-## Start the Full Local Stack
+## Start the Full Local App Stack in Docker
 
 ```bash
 docker compose up -d --build
 ```
+
+This Compose file runs the built application containers.
+
+It is useful for:
+
+* end-to-end local verification;
+* Flyway migration checks;
+* OpenBao secret bootstrap checks;
+* verifying the real container startup path.
+
+It is not a hot-reload workflow.
 
 The local Compose environment seeds OpenBao before the Control Plane and Gateway start.
 
@@ -883,9 +934,17 @@ The local Compose environment seeds OpenBao before the Control Plane and Gateway
 
 ## Run the Control Plane
 
+Docker-only development loop:
+
 ```bash
-./gradlew :controlplane:bootRun
+docker compose -f docker-compose.dev.yml up -d --build
 ```
+
+If you prefer to run the application outside Docker, `./gradlew :controlplane:bootRun` still works, but it is optional.
+
+The development container runs from mounted source and polls for file changes under `core/src` and `controlplane/src`. When a change is detected, it restarts the Control Plane process automatically inside the container.
+
+The dev container uses an internal Gradle project cache directory instead of the bind-mounted workspace cache to avoid `.gradle` lock conflicts between services.
 
 The current Control Plane runs on:
 
@@ -915,9 +974,17 @@ http://localhost:7080/swagger-ui.html
 
 ## Run the Gateway
 
+Docker-only development loop:
+
 ```bash
-./gradlew :gateway:run
+docker compose -f docker-compose.dev.yml up -d --build
 ```
+
+If you prefer to run the application outside Docker, `./gradlew :gateway:run` still works, but it is optional.
+
+The development container runs from mounted source and polls for file changes under `core/src` and `gateway/src`. When a change is detected, it restarts the Gateway process automatically inside the container.
+
+The dev container uses an internal Gradle project cache directory instead of the bind-mounted workspace cache to avoid `.gradle` lock conflicts between services.
 
 The Gateway currently runs on:
 
@@ -940,6 +1007,15 @@ It is a standalone Java application using Netty.
 # Docker Architecture
 
 The repository currently uses a shared root Dockerfile with separate build targets.
+
+For the current development stage:
+
+* `docker compose up` starts the full local development stack by default;
+* `docker compose up db openbao openbao-init` is the lighter infra-only workflow;
+* `docker compose -f docker-compose.dev.yml up -d --build` is the recommended Docker-only development workflow;
+* local Gradle execution is optional, not required;
+* dev containers poll mounted source files and restart the app process automatically when code changes;
+* container rebuilds are mainly needed when Docker-related files or dependencies change.
 
 ```text
 Dockerfile

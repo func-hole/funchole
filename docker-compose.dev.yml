@@ -1,0 +1,103 @@
+services:
+  controlplane:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev-controlplane
+    depends_on:
+      db:
+        condition: service_healthy
+      openbao-init:
+        condition: service_completed_successfully
+    environment:
+      BAO_ADDR: http://openbao:8200
+      BAO_TOKEN: dev-only-root-token
+    ports:
+      - "7080:7080"
+    volumes:
+      - .:/workspace
+    entrypoint: ["/opt/funchole/controlplane-dev-entrypoint.sh"]
+    networks:
+      - funchole-dev-network
+
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev-gateway
+    depends_on:
+      db:
+        condition: service_healthy
+      openbao-init:
+        condition: service_completed_successfully
+    environment:
+      BAO_ADDR: http://openbao:8200
+      BAO_TOKEN: dev-only-root-token
+    ports:
+      - "7081:7081"
+    volumes:
+      - .:/workspace
+    entrypoint: ["/opt/funchole/gateway-dev-entrypoint.sh"]
+    networks:
+      - funchole-dev-network
+
+  openbao:
+    image: docker.io/openbao/openbao:2.6.1
+    cap_add:
+      - IPC_LOCK
+    command: ["server", "-dev", "-dev-listen-address=0.0.0.0:8200", "-dev-root-token-id=dev-only-root-token"]
+    environment:
+      BAO_ADDR: http://127.0.0.1:8200
+      BAO_API_ADDR: http://127.0.0.1:8200
+    healthcheck:
+      test: ["CMD-SHELL", "BAO_ADDR=http://127.0.0.1:8200 bao status >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    ports:
+      - "8200:8200"
+    volumes:
+      - openbao-dev-data:/openbao/data
+    networks:
+      - funchole-dev-network
+
+  openbao-init:
+    image: curlimages/curl:8.15.0
+    depends_on:
+      openbao:
+        condition: service_healthy
+    environment:
+      BAO_ADDR: http://openbao:8200
+      BAO_TOKEN: dev-only-root-token
+    volumes:
+      - ./docker/openbao-init/init-openbao.sh:/init-openbao.sh:ro
+      - ./docker/openbao-init/secrets:/secrets:ro
+    entrypoint: ["/bin/sh", "/init-openbao.sh"]
+    networks:
+      - funchole-dev-network
+
+  db:
+    image: postgres:17.6
+    environment:
+      POSTGRES_DB: funchole
+      POSTGRES_USER: funchole
+      POSTGRES_PASSWORD: funchole
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-dev-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U funchole -d funchole"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - funchole-dev-network
+
+volumes:
+  postgres-dev-data:
+  openbao-dev-data:
+
+networks:
+  funchole-dev-network:
+    driver: bridge
