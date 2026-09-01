@@ -4,4 +4,4 @@ plugins {
 
 rootProject.name = "funchole-backend"
 
-include("core", "api")
+include("core", "controlplane", "gateway", "invocation", "runtime")

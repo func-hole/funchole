@@ -1,0 +1,35 @@
+plugins {
+    id 'application'
+}
+
+description = 'Standalone raw Netty gateway service.'
+
+dependencies {
+    implementation 'com.fasterxml.jackson.core:jackson-databind'
+    implementation 'com.zaxxer:HikariCP'
+    implementation 'io.netty:netty-buffer'
+    implementation 'io.netty:netty-codec-http'
+    implementation 'io.netty:netty-common'
+    implementation 'io.netty:netty-handler'
+    implementation 'io.netty:netty-transport'
+    implementation 'org.postgresql:postgresql'
+}
+
+application {
+    mainClass = 'com.funchole.backend.gateway.GatewayMain'
+}
+
+tasks.register('fatJar', Jar) {
+    group = 'build'
+    description = 'Assembles an executable fat jar for the gateway service.'
+    archiveFileName = 'funchole-gateway.jar'
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    manifest {
+        attributes 'Main-Class': application.mainClass.get()
+    }
+    from sourceSets.main.output
+    dependsOn configurations.runtimeClasspath
+    from {
+        configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) }
+    }
+}

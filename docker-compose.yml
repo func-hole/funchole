@@ -1,8 +1,9 @@
 services:
-  app:
+  controlplane:
     build:
       context: .
-      dockerfile: api/Dockerfile
+      dockerfile: Dockerfile
+      target: controlplane
     depends_on:
       db:
         condition: service_healthy
@@ -13,6 +14,24 @@ services:
       SERVER_PORT: 7080
     ports:
       - "7080:7080"
+    networks:
+      - funchole-network
+
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: gateway
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_URL: jdbc:postgresql://db:5432/funchole
+      DB_USERNAME: funchole
+      DB_PASSWORD: funchole
+      GATEWAY_PORT: 7081
+    ports:
+      - "7081:7081"
     networks:
       - funchole-network
 

@@ -1,0 +1,9 @@
+plugins {
+    id 'java-library'
+}
+
+description = 'Runtime module placeholder for execution concerns.'
+
+dependencies {
+    implementation project(':core')
+}

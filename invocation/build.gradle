@@ -1,0 +1,9 @@
+plugins {
+    id 'java-library'
+}
+
+description = 'Invocation module placeholder for orchestration concerns.'
+
+dependencies {
+    implementation project(':core')
+}
