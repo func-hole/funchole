@@ -6,6 +6,7 @@
 - Gradle
 - PostgreSQL
 - Docker Compose
+- OpenBao
 - Shared root Dockerfile with multi-target builds
 - Spring Boot 4.1.1 for `controlplane`
 - Raw Netty for `gateway`
@@ -45,6 +46,18 @@ backend
    docker compose up -d db
    ```
 
+   Or start PostgreSQL plus OpenBao for local secret-management work:
+
+   ```bash
+   docker compose up -d db openbao
+   ```
+
+   The full local stack seeds OpenBao automatically before `controlplane` and `gateway` start:
+
+   ```bash
+   docker compose up -d --build
+   ```
+
 2. Run the controlplane application:
 
    ```bash
@@ -55,12 +68,6 @@ backend
 
    ```bash
    ./gradlew :gateway:run
-   ```
-
-   Or run the database and both services together:
-
-   ```bash
-   docker compose up -d --build
    ```
 
 4. Smoke-test the controlplane API:
@@ -91,9 +98,29 @@ backend
    open http://localhost:7080/swagger-ui.html
    ```
 
+8. OpenBao dev endpoint:
+
+   ```bash
+   export BAO_ADDR=http://127.0.0.1:8200
+   export BAO_TOKEN=dev-only-root-token
+   bao status
+   ```
+
+9. Inspect seeded OpenBao secrets:
+
+   ```bash
+   bao kv get -mount=secret controlplane/app
+   bao kv get -mount=secret gateway/app
+   ```
+
 ## Docker Notes
 
 - Compose uses an isolated `funchole-network` bridge network for the app and database.
+- OpenBao is included as a local development dependency on `http://localhost:8200`.
+- The Compose setup uses the official Docker Hub image `docker.io/openbao/openbao:2.6.1` for OpenBao.
+- The current OpenBao setup uses `server -dev` with a fixed dev root token and an automated `openbao-init` seeding step, so it is only appropriate for local development.
+- An `openbao-data` Docker volume is attached for filesystem continuity, but the current `server -dev` mode still does not behave like a fully persistent OpenBao deployment.
+- Dev secrets are stored as JSON payload files under [docker/openbao-init/secrets](/Users/rafsan/Workspare/FuncHole/backend/docker/openbao-init/secrets), which keeps secret growth out of the init script itself.
 - `controlplane` and `gateway` now share one root [Dockerfile](/Users/rafsan/Workspare/FuncHole/backend/Dockerfile) with separate build targets, so the JDK/JRE stage definitions are maintained in one place.
 - Fixed `container_name` values are intentionally not used, so Compose can manage service instances without name collisions.
 - The Docker build targets are:
@@ -122,5 +149,9 @@ backend
 - The project targets Java 25 through Gradle toolchains.
 - Flyway migrations live in `controlplane/src/main/resources/db/migration`.
 - Integration tests use PostgreSQL via Testcontainers.
-- Change the default bootstrap credentials and JWT secret before using this outside local development.
+- `controlplane` and `gateway` now fetch secret values from OpenBao during container startup.
+- Only bootstrap connection values stay in Compose env for local development: `BAO_ADDR` and `BAO_TOKEN`.
+- Service runtime env like `DB_URL`, `DB_USERNAME`, `DB_PASSWORD`, `JWT_SECRET`, and ports are now loaded from OpenBao secret documents.
+- Change the default bootstrap credentials, OpenBao root token, and JWT secret before using this outside local development.
 - `gateway` is not a Spring Boot application. It is a plain Java service using Netty plus JDBC/HikariCP.
+- Change the OpenBao setup before any non-local use; dev mode and the fixed root token are intentionally insecure.
