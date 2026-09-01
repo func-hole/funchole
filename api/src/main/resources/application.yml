@@ -22,8 +22,12 @@ spring:
     compose:
       enabled: false
 
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+
 server:
-  port: ${SERVER_PORT:8080}
+  port: ${SERVER_PORT:7080}
 
 management:
   endpoints:
@@ -48,3 +52,13 @@ info:
 logging:
   level:
     org.springframework.web: INFO
+    org.springframework.security: INFO
+
+app:
+  security:
+    jwt:
+      secret: ${JWT_SECRET:ZGV2LXNlY3JldC1mb3ItZnVuY2hvbGUtYmFja2VuZC1jaGFuZ2UtbWUtYmVmb3JlLXByb2QteHl6MTIzNDU2Nzg5MDEyMw==}
+      expiration-seconds: ${JWT_EXPIRATION_SECONDS:3600}
+    bootstrap-user:
+      username: ${BOOTSTRAP_USERNAME:admin}
+      password: ${BOOTSTRAP_PASSWORD:admin12345}
