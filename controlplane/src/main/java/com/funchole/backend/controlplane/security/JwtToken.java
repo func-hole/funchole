@@ -5,6 +5,7 @@ import java.time.OffsetDateTime;
 public record JwtToken(
         String token,
         OffsetDateTime issuedAt,
-        OffsetDateTime expiresAt
+        OffsetDateTime expiresAt,
+        Boolean passwordChangeRequired
 ) {
 }

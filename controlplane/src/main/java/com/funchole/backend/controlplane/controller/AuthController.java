@@ -41,7 +41,7 @@ public class AuthController {
         );
 
         AppUserPrincipal principal = (AppUserPrincipal) authentication.getPrincipal();
-        JwtToken jwtToken = jwtService.generateToken(principal.getId(), principal.getUsername());
+        JwtToken jwtToken = jwtService.generateToken(principal.getId(), principal.getUsername(), principal.isPasswordChangeRequired());
         return ApiResponse.success(authTokenMapper.toResponse(jwtToken));
     }
 }

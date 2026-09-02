@@ -6,6 +6,7 @@ public record AuthTokenResponse(
         String accessToken,
         String tokenType,
         OffsetDateTime issuedAt,
-        OffsetDateTime expiresAt
+        OffsetDateTime expiresAt,
+        Boolean passwordChangeRequired
 ) {
 }

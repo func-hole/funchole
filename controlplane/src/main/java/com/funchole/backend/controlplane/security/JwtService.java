@@ -1,18 +1,22 @@
 package com.funchole.backend.controlplane.security;
 
-import com.funchole.backend.controlplane.config.SecurityProperties;
-import io.jsonwebtoken.Claims;
-import io.jsonwebtoken.Jwts;
-import io.jsonwebtoken.io.Decoders;
-import io.jsonwebtoken.security.Keys;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.Date;
 import java.util.UUID;
 import java.util.function.Function;
+
 import javax.crypto.SecretKey;
+
 import org.springframework.stereotype.Service;
+
+import com.funchole.backend.controlplane.config.SecurityProperties;
+
+import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.io.Decoders;
+import io.jsonwebtoken.security.Keys;
 
 @Service
 public class JwtService {
@@ -25,7 +29,7 @@ public class JwtService {
         this.securityProperties = securityProperties;
     }
 
-    public JwtToken generateToken(UUID userId, String username) {
+    public JwtToken generateToken(UUID userId, String username, Boolean passwordChangeRequired) {
         Instant issuedAt = Instant.now();
         Instant expiresAt = issuedAt.plusSeconds(securityProperties.jwt().expirationSeconds());
 
@@ -40,7 +44,8 @@ public class JwtService {
         return new JwtToken(
                 token,
                 OffsetDateTime.ofInstant(issuedAt, ZoneOffset.UTC),
-                OffsetDateTime.ofInstant(expiresAt, ZoneOffset.UTC)
+                OffsetDateTime.ofInstant(expiresAt, ZoneOffset.UTC),
+                passwordChangeRequired
         );
     }
 
