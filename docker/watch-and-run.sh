@@ -23,6 +23,7 @@ if [ "$#" -eq 0 ]; then
 fi
 
 APP_PID=""
+APP_EXIT_REPORTED="false"
 
 cleanup() {
     if [ -n "${APP_PID}" ] && kill -0 "${APP_PID}" 2>/dev/null; then
@@ -44,6 +45,7 @@ compute_state() {
 start_app() {
     "$@" &
     APP_PID=$!
+    APP_EXIT_REPORTED="false"
     echo "Started app process with PID ${APP_PID}"
 }
 
@@ -54,6 +56,7 @@ stop_app() {
         wait "${APP_PID}" 2>/dev/null || true
     fi
     APP_PID=""
+    APP_EXIT_REPORTED="false"
 }
 
 LAST_STATE="$(compute_state)"
@@ -72,7 +75,10 @@ while true; do
     fi
 
     if [ -n "${APP_PID}" ] && ! kill -0 "${APP_PID}" 2>/dev/null; then
-        echo "Application process exited, starting again"
-        start_app "$@"
+        APP_PID=""
+        if [ "${APP_EXIT_REPORTED}" != "true" ]; then
+            APP_EXIT_REPORTED="true"
+            echo "Application process exited. Waiting for the next source change before retrying."
+        fi
     fi
 done

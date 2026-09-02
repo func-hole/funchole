@@ -946,6 +946,8 @@ The development container runs from mounted source and polls for file changes un
 
 The dev container uses an internal Gradle project cache directory instead of the bind-mounted workspace cache to avoid `.gradle` lock conflicts between services.
 
+If the application fails to compile or start, the watcher now stays idle and waits for the next file change instead of restarting in a loop.
+
 The current Control Plane runs on:
 
 ```text
@@ -985,6 +987,8 @@ If you prefer to run the application outside Docker, `./gradlew :gateway:run` st
 The development container runs from mounted source and polls for file changes under `core/src` and `gateway/src`. When a change is detected, it restarts the Gateway process automatically inside the container.
 
 The dev container uses an internal Gradle project cache directory instead of the bind-mounted workspace cache to avoid `.gradle` lock conflicts between services.
+
+If the application fails to compile or start, the watcher now stays idle and waits for the next file change instead of restarting in a loop.
 
 The Gateway currently runs on:
 
