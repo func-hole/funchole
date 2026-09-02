@@ -13,8 +13,6 @@ public class AppUserPrincipal implements UserDetails {
     private final UUID id;
     private final String username;
     private final String password;
-    private final String email;
-    private final String fullName;
     private final Collection<? extends GrantedAuthority> authorities;
     private final boolean passwordChangeRequired;
 
@@ -22,8 +20,6 @@ public class AppUserPrincipal implements UserDetails {
         this.id = appUser.getId();
         this.username = appUser.getUsername();
         this.password = appUser.getPasswordHash();
-        this.email = appUser.getEmail();
-        this.fullName = appUser.getFullName();
         this.authorities = List.of(new SimpleGrantedAuthority("ROLE_USER"));
         this.passwordChangeRequired = appUser.isPasswordChangeRequired();
     }
@@ -49,13 +45,5 @@ public class AppUserPrincipal implements UserDetails {
     @Override
     public String getUsername() {
         return username;
-    }
-
-    public String getEmail() {
-        return email;
-    }
-
-    public String getFullName() {
-        return fullName;
     }
 }
