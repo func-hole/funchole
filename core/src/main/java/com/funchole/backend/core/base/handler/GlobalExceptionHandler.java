@@ -41,7 +41,7 @@ public class GlobalExceptionHandler {
                 .toList();
 
         return buildResponse(
-                HttpStatus.BAD_REQUEST,
+                HttpStatus.UNPROCESSABLE_CONTENT,
                 "Validation failed",
                 request.getRequestURI(),
                 details
@@ -59,7 +59,7 @@ public class GlobalExceptionHandler {
                 .toList();
 
         return buildResponse(
-                HttpStatus.BAD_REQUEST,
+                HttpStatus.UNPROCESSABLE_CONTENT,
                 "Constraint violation",
                 request.getRequestURI(),
                 details

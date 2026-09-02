@@ -3,6 +3,7 @@ package com.funchole.backend.controlplane.controller;
 
 import org.springframework.data.crossstore.ChangeSetPersister.NotFoundException;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -10,6 +11,7 @@ import org.springframework.web.bind.annotation.RestController;
 import com.funchole.backend.controlplane.dto.ProfileRequest;
 import com.funchole.backend.controlplane.dto.ProfileResponse;
 import com.funchole.backend.controlplane.entity.AppUser;
+import com.funchole.backend.controlplane.mapper.ProfileMapper;
 import com.funchole.backend.controlplane.security.AppUserPrincipal;
 import com.funchole.backend.controlplane.service.ProfileService;
 import com.funchole.backend.core.base.response.ApiResponse;
@@ -24,9 +26,11 @@ import org.springframework.web.bind.annotation.RequestBody;
 public class ProfileController {
 
     private final ProfileService profileService;
+    private final ProfileMapper profileMapper;
     
-    public ProfileController(ProfileService profileService) {
+    public ProfileController(ProfileService profileService, ProfileMapper profileMapper) {
         this.profileService = profileService;
+        this.profileMapper = profileMapper;
     }
 
     @GetMapping("/me")
@@ -34,26 +38,16 @@ public class ProfileController {
     public ApiResponse<ProfileResponse> getProfile(@AuthenticationPrincipal AppUserPrincipal appUserPrincipal) throws NotFoundException {
         AppUser appUser = profileService.loadUserById(appUserPrincipal.getId());
 
-        return ApiResponse.success(new ProfileResponse(
-            appUser.getId(),
-            appUser.getUsername(),
-            appUser.getEmail(),
-            appUser.getFullName()
-        ));
+        return ApiResponse.success(profileMapper.toResponse(appUser));
     }
 
     @PutMapping("/me")
     @SecurityRequirement(name = "bearerAuth")
-    public ApiResponse<ProfileResponse> updateProfile(@AuthenticationPrincipal AppUserPrincipal appUserPrincipal, @RequestBody ProfileRequest profileRequest) throws NotFoundException {
+    public ApiResponse<ProfileResponse> updateProfile(@AuthenticationPrincipal AppUserPrincipal appUserPrincipal, @Valid @RequestBody ProfileRequest profileRequest) throws NotFoundException {
         AppUser appUser = profileService.loadUserById(appUserPrincipal.getId());
         appUser = profileService.updateUser(appUser, profileRequest);
         
-        return ApiResponse.success(new ProfileResponse(
-            appUser.getId(),
-            appUser.getUsername(),
-            appUser.getEmail(),
-            appUser.getFullName()
-        ));
+        return ApiResponse.success(profileMapper.toResponse(appUser));
     }
 
     
