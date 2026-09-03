@@ -11,7 +11,6 @@ import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 import java.time.OffsetDateTime;
 import java.util.UUID;
-
 import com.funchole.backend.controlplane.constant.DomainStatus;
 
 @Entity
@@ -20,9 +19,6 @@ public class AppDomain {
 
     @Id
     private UUID id;
-
-    @Column(name = "app_user_id", nullable = false)
-    private UUID appUserId;
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "app_user_id", nullable = false)
@@ -48,10 +44,6 @@ public class AppDomain {
         return id;
     }
 
-    public UUID getAppUserId() {
-        return appUserId;
-    }
-
     public AppUser getAppUser() {
         return appUser;
     }
@@ -74,5 +66,23 @@ public class AppDomain {
 
     public OffsetDateTime getUpdatedAt() {
         return updatedAt;
+    }
+
+    public static AppDomain create(
+            AppUser appUser,
+            String domainName,
+            String verificationCode,
+            DomainStatus status
+    ) {
+        AppDomain appDomain = new AppDomain();
+        OffsetDateTime now = OffsetDateTime.now();
+        appDomain.id = UUID.randomUUID();
+        appDomain.appUser = appUser;
+        appDomain.domainName = domainName;
+        appDomain.verificationCode = verificationCode;
+        appDomain.status = status;
+        appDomain.createdAt = now;
+        appDomain.updatedAt = now;
+        return appDomain;
     }
 }
