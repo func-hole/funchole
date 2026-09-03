@@ -68,6 +68,11 @@ public class AppDomain {
         return updatedAt;
     }
 
+    public void markVerified() {
+        this.status = DomainStatus.VERIFIED;
+        this.updatedAt = OffsetDateTime.now();
+    }
+
     public static AppDomain create(
             AppUser appUser,
             String domainName,

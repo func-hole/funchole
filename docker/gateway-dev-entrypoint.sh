@@ -2,16 +2,16 @@
 
 set -eu
 
-. /opt/funchole/openbao-common.sh
+. /workspace/docker/openbao-common.sh
 
 cd /workspace
 chmod +x ./gradlew
-chmod +x /opt/funchole/watch-and-run.sh
+chmod +x /workspace/docker/watch-and-run.sh
 
 wait_for_openbao
 export_secret_document gateway/app
 
-exec /opt/funchole/watch-and-run.sh \
+exec /workspace/docker/watch-and-run.sh \
     /workspace/core/src \
     /workspace/gateway/src \
     /workspace/gateway/build.gradle \

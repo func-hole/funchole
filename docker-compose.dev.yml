@@ -9,14 +9,17 @@ services:
         condition: service_healthy
       openbao-init:
         condition: service_completed_successfully
+      dns:
+        condition: service_started
     environment:
       BAO_ADDR: http://openbao:8200
       BAO_TOKEN: dev-only-root-token
+      DNS_SERVICE_NAME: dns
     ports:
       - "7080:7080"
     volumes:
       - .:/workspace
-    entrypoint: ["/opt/funchole/controlplane-dev-entrypoint.sh"]
+    entrypoint: ["sh", "/workspace/docker/controlplane-dev-entrypoint.sh"]
     networks:
       - funchole-dev-network
 
@@ -37,7 +40,7 @@ services:
       - "7081:7081"
     volumes:
       - .:/workspace
-    entrypoint: ["/opt/funchole/gateway-dev-entrypoint.sh"]
+    entrypoint: ["sh", "/workspace/docker/gateway-dev-entrypoint.sh"]
     networks:
       - funchole-dev-network
 
@@ -94,9 +97,24 @@ services:
     networks:
       - funchole-dev-network
 
+  dns:
+    image: technitium/dns-server:latest
+    environment:
+      DNS_SERVER_DOMAIN: dns.funchole.local
+      DNS_SERVER_ADMIN_PASSWORD: admin
+    ports:
+      - "53:53/tcp"
+      - "53:53/udp"
+      - "5380:5380/tcp"
+    volumes:
+      - technitium-dev-data:/etc/dns
+    networks:
+      - funchole-dev-network
+
 volumes:
   postgres-dev-data:
   openbao-dev-data:
+  technitium-dev-data:
 
 networks:
   funchole-dev-network:

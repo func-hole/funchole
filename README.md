@@ -41,6 +41,27 @@ The goal is to provide a self-hosted function platform where:
 
 ---
 
+## Local Development Stack
+
+The development environment in `[docker-compose.dev.yml](/Users/rafsan/Workspare/FuncHole/backend/docker-compose.dev.yml)` includes:
+
+* `controlplane` on `http://localhost:7080`
+* `gateway` on `http://localhost:7081`
+* PostgreSQL on `localhost:5432`
+* OpenBao on `http://localhost:8200`
+* Technitium DNS on `localhost:53` with the admin UI on `http://localhost:5380`
+
+Technitium is there for local DNS experimentation during development. Its state is persisted in the Docker volume `technitium-dev-data`.
+
+The current dev defaults are:
+
+* `DNS_SERVER_DOMAIN=dns.funchole.local`
+* `DNS_SERVER_ADMIN_PASSWORD=admin`
+
+Change the admin password if this stack is used anywhere beyond a local-only machine.
+
+---
+
 ## Core Philosophy
 
 FuncHole is being designed around a few fundamental principles.

@@ -20,9 +20,11 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.crossstore.ChangeSetPersister.NotFoundException;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
+import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/v1/domains")
@@ -44,7 +46,7 @@ public class DomainController {
         this.paginationMapper = paginationMapper;
     }
 
-    @GetMapping("/")
+    @GetMapping
     @SecurityRequirement(name = "bearerAuth")
     public ApiResponse<PaginationResponse<DomainResponse>> listDomains(
             @AuthenticationPrincipal AppUserPrincipal appUserPrincipal,
@@ -55,6 +57,26 @@ public class DomainController {
                 .map(domainMapper::toResponse);
 
         return ApiResponse.success(paginationMapper.toResponse(domains));
+    }
+
+    @GetMapping("/{id}")
+    @SecurityRequirement(name = "bearerAuth")
+    public ApiResponse<DomainResponse> getDomainById(
+            @AuthenticationPrincipal AppUserPrincipal appUserPrincipal,
+            @PathVariable UUID id
+    ) {
+        AppDomain appDomain = domainService.getDomainById(appUserPrincipal.getId(), id);
+        return ApiResponse.success(domainMapper.toResponse(appDomain));
+    }
+
+    @PostMapping("/{id}/verification")
+    @SecurityRequirement(name = "bearerAuth")
+    public ApiResponse<DomainResponse> initiateDomainVerification(
+            @AuthenticationPrincipal AppUserPrincipal appUserPrincipal,
+            @PathVariable UUID id
+    ) {
+        AppDomain appDomain = domainService.initiateDomainVerification(appUserPrincipal.getId(), id);
+        return ApiResponse.success(domainMapper.toResponse(appDomain));
     }
 
     @PostMapping

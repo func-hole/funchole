@@ -15,6 +15,7 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-web'
     implementation 'org.springframework.boot:spring-boot-starter-flyway'
     implementation 'org.flywaydb:flyway-database-postgresql'
+    implementation "dnsjava:dnsjava:${dnsjavaVersion}"
     implementation "org.mapstruct:mapstruct:${mapstructVersion}"
     implementation "org.springdoc:springdoc-openapi-starter-webmvc-ui:${springdocVersion}"
     implementation "io.jsonwebtoken:jjwt-api:${jwtVersion}"
