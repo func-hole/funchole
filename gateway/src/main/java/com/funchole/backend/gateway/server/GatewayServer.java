@@ -1,23 +1,29 @@
 package com.funchole.backend.gateway.server;
 
+import com.funchole.backend.gateway.GatewayRegistry;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public final class GatewayServer implements AutoCloseable {
+    private static final Logger logger = LoggerFactory.getLogger(GatewayServer.class);
 
     private final int port;
+    private final GatewayRegistry gatewayRegistry;
     private final GatewayHttpHandler gatewayHttpHandler;
 
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
     private Channel channel;
 
-    public GatewayServer(int port, GatewayHttpHandler gatewayHttpHandler) {
+    public GatewayServer(int port, GatewayRegistry gatewayRegistry, GatewayHttpHandler gatewayHttpHandler) {
         this.port = port;
+        this.gatewayRegistry = gatewayRegistry;
         this.gatewayHttpHandler = gatewayHttpHandler;
     }
 
@@ -31,9 +37,10 @@ public final class GatewayServer implements AutoCloseable {
                     .channel(NioServerSocketChannel.class)
                     .option(ChannelOption.SO_BACKLOG, 1024)
                     .childOption(ChannelOption.SO_KEEPALIVE, true)
-                    .childHandler(new GatewayChannelInitializer(gatewayHttpHandler));
+                    .childHandler(new GatewayChannelInitializer(gatewayRegistry, gatewayHttpHandler));
 
             channel = bootstrap.bind(port).sync().channel();
+            logger.info("Gateway HTTPS server listening on port {} with {} registered host(s)", port, gatewayRegistry.entries().size());
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("Failed to start gateway server", exception);

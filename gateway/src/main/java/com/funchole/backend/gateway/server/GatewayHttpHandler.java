@@ -1,6 +1,10 @@
 package com.funchole.backend.gateway.server;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.funchole.backend.gateway.GatewayRegistry;
+import com.funchole.backend.gateway.GatewayRequestContext;
+import com.funchole.backend.gateway.GatewayRuntimeEntry;
+import com.funchole.backend.gateway.flow.FlowResolver;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandler;
@@ -10,54 +14,73 @@ import io.netty.handler.codec.http.DefaultFullHttpResponse;
 import io.netty.handler.codec.http.FullHttpRequest;
 import io.netty.handler.codec.http.FullHttpResponse;
 import io.netty.handler.codec.http.HttpHeaderNames;
-import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.HttpVersion;
 import java.nio.charset.StandardCharsets;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
 import java.util.Map;
-import javax.sql.DataSource;
 
 @ChannelHandler.Sharable
 public final class GatewayHttpHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
 
     private final ObjectMapper objectMapper;
-    private final DataSource dataSource;
+    private final GatewayRegistry gatewayRegistry;
+    private final FlowResolver flowResolver;
 
-    public GatewayHttpHandler(ObjectMapper objectMapper, DataSource dataSource) {
+    public GatewayHttpHandler(ObjectMapper objectMapper, GatewayRegistry gatewayRegistry, FlowResolver flowResolver) {
         this.objectMapper = objectMapper;
-        this.dataSource = dataSource;
+        this.gatewayRegistry = gatewayRegistry;
+        this.flowResolver = flowResolver;
     }
 
     @Override
     protected void channelRead0(ChannelHandlerContext context, FullHttpRequest request) throws Exception {
-        if (request.method() != HttpMethod.GET) {
-            writeJson(context, HttpResponseStatus.METHOD_NOT_ALLOWED, Map.of(
-                    "success", false,
-                    "message", "Only GET is supported in the gateway demo"
-            ));
-            return;
-        }
+        GatewayRequestContext requestContext = toRequestContext(request);
 
-        String path = sanitizePath(request.uri());
-
-        if ("/health".equals(path)) {
+        if ("/health".equals(requestContext.path())) {
             writeJson(context, HttpResponseStatus.OK, Map.of(
                     "success", true,
                     "service", "gateway",
                     "transport", "raw-netty",
-                    "status", "ok"
+                    "protocol", "https",
+                    "status", "ok",
+                    "registeredGateways", gatewayRegistry.entries().size()
             ));
             return;
         }
 
-        if ("/demo/bootstrap-metadata".equals(path)) {
+        if (requestContext.hostname().isBlank()) {
+            writeJson(context, HttpResponseStatus.BAD_REQUEST, Map.of(
+                    "success", false,
+                    "message", "Host header is required"
+            ));
+            return;
+        }
+
+        GatewayRuntimeEntry gateway = gatewayRegistry.findByHostname(requestContext.hostname());
+        if (gateway == null) {
+            writeJson(context, HttpResponseStatus.NOT_FOUND, Map.of(
+                    "success", false,
+                    "message", "Gateway host not found",
+                    "host", requestContext.hostname(),
+                    "path", requestContext.path()
+            ));
+            return;
+        }
+
+        if (flowResolver.resolve(gateway, requestContext).isEmpty()) {
             writeJson(context, HttpResponseStatus.OK, Map.of(
                     "success", true,
-                    "data", fetchBootstrapMetadata()
+                    "message", "Gateway ready for taking request",
+                    "data", Map.of(
+                            "gatewayId", gateway.gatewayId().toString(),
+                            "gatewayName", gateway.gatewayName(),
+                            "gatewayKey", gateway.gatewayKey(),
+                            "domainName", gateway.domainName(),
+                            "hostname", gateway.hostname(),
+                            "path", requestContext.path(),
+                            "method", requestContext.method(),
+                            "flowResolved", false
+                    )
             ));
             return;
         }
@@ -65,7 +88,8 @@ public final class GatewayHttpHandler extends SimpleChannelInboundHandler<FullHt
         writeJson(context, HttpResponseStatus.NOT_FOUND, Map.of(
                 "success", false,
                 "message", "Route not found",
-                "path", path
+                "host", requestContext.hostname(),
+                "path", requestContext.path()
         ));
     }
 
@@ -74,32 +98,34 @@ public final class GatewayHttpHandler extends SimpleChannelInboundHandler<FullHt
         writeText(context, HttpResponseStatus.INTERNAL_SERVER_ERROR, "Gateway error: " + cause.getMessage());
     }
 
-    private Map<String, String> fetchBootstrapMetadata() throws SQLException {
-        try (
-                Connection connection = dataSource.getConnection();
-                PreparedStatement statement = connection.prepareStatement("""
-                        select key, value
-                        from app_metadata
-                        where key = ?
-                        """)
-        ) {
-            statement.setString(1, "bootstrap.version");
-            try (ResultSet resultSet = statement.executeQuery()) {
-                if (!resultSet.next()) {
-                    throw new IllegalStateException("bootstrap.version metadata not found");
-                }
-                return Map.of(
-                        "service", "gateway",
-                        "key", resultSet.getString("key"),
-                        "value", resultSet.getString("value")
-                );
-            }
-        }
+    private GatewayRequestContext toRequestContext(FullHttpRequest request) {
+        return new GatewayRequestContext(
+                request.method().name(),
+                normalizeHostname(request.headers().get(HttpHeaderNames.HOST)),
+                sanitizePath(request.uri()),
+                request.uri()
+        );
     }
 
     private String sanitizePath(String uri) {
         int queryIndex = uri.indexOf('?');
-        return queryIndex >= 0 ? uri.substring(0, queryIndex) : uri;
+        String path = queryIndex >= 0 ? uri.substring(0, queryIndex) : uri;
+        return path == null || path.isBlank() ? "/" : path;
+    }
+
+    private String normalizeHostname(String hostHeader) {
+        if (hostHeader == null || hostHeader.isBlank()) {
+            return "";
+        }
+
+        String normalized = hostHeader.trim().toLowerCase();
+        if (normalized.startsWith("[")) {
+            int closingIndex = normalized.indexOf(']');
+            return closingIndex >= 0 ? normalized.substring(0, closingIndex + 1) : normalized;
+        }
+
+        int colonIndex = normalized.indexOf(':');
+        return colonIndex >= 0 ? normalized.substring(0, colonIndex) : normalized;
     }
 
     private void writeJson(ChannelHandlerContext context, HttpResponseStatus status, Object payload) throws Exception {

@@ -5,14 +5,17 @@ plugins {
 description = 'Standalone raw Netty gateway service.'
 
 dependencies {
+    implementation project(':certificate')
     implementation 'com.fasterxml.jackson.core:jackson-databind'
     implementation 'com.zaxxer:HikariCP'
     implementation 'io.netty:netty-buffer'
     implementation 'io.netty:netty-codec-http'
     implementation 'io.netty:netty-common'
     implementation 'io.netty:netty-handler'
+    implementation 'io.netty:netty-codec'
     implementation 'io.netty:netty-transport'
     implementation 'org.postgresql:postgresql'
+    implementation 'org.slf4j:slf4j-simple'
 }
 
 application {
