@@ -1,0 +1,10 @@
+plugins {
+    id 'java-library'
+}
+
+description = 'Framework-independent certificate generation and storage contracts.'
+
+dependencies {
+    implementation "org.bouncycastle:bcprov-jdk18on:${bouncyCastleVersion}"
+    implementation "org.bouncycastle:bcpkix-jdk18on:${bouncyCastleVersion}"
+}
