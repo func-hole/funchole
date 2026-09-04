@@ -2,13 +2,16 @@ package com.funchole.backend.controlplane.service;
 
 import com.funchole.backend.controlplane.dto.GatewayCreateRequest;
 import com.funchole.backend.controlplane.dto.GatewayUpdateRequest;
+import com.funchole.backend.controlplane.constant.DomainStatus;
 import com.funchole.backend.controlplane.entity.AppDomain;
 import com.funchole.backend.controlplane.entity.AppUser;
 import com.funchole.backend.controlplane.entity.Gateway;
+import com.funchole.backend.controlplane.event.GatewayCertificateProvisionRequested;
 import com.funchole.backend.controlplane.repository.GatewayRepository;
 import com.funchole.backend.core.base.exception.ResourceNotFoundException;
 import java.security.SecureRandom;
 import java.util.UUID;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -24,11 +27,20 @@ public class GatewayService {
 
     private final GatewayRepository gatewayRepository;
     private final DomainService domainService;
+    private final GatewayCertificateService gatewayCertificateService;
+    private final ApplicationEventPublisher applicationEventPublisher;
     private final SecureRandom secureRandom = new SecureRandom();
 
-    public GatewayService(GatewayRepository gatewayRepository, DomainService domainService) {
+    public GatewayService(
+            GatewayRepository gatewayRepository,
+            DomainService domainService,
+            GatewayCertificateService gatewayCertificateService,
+            ApplicationEventPublisher applicationEventPublisher
+    ) {
         this.gatewayRepository = gatewayRepository;
         this.domainService = domainService;
+        this.gatewayCertificateService = gatewayCertificateService;
+        this.applicationEventPublisher = applicationEventPublisher;
     }
 
     public Page<Gateway> listGateways(UUID appUserId, int page, int size) {
@@ -48,6 +60,7 @@ public class GatewayService {
     @Transactional
     public Gateway createGateway(AppUser appUser, GatewayCreateRequest request) {
         AppDomain appDomain = domainService.getDomainById(appUser.getId(), request.appDomainId());
+        validateVerifiedDomain(appDomain);
         String uniqueKey = generateUniqueKey();
 
         Gateway gateway = Gateway.create(
@@ -59,13 +72,18 @@ public class GatewayService {
                 request.status()
         );
 
-        return gatewayRepository.save(gateway);
+        Gateway savedGateway = gatewayRepository.save(gateway);
+        GatewayCertificateService.CertificateSyncResult certificateSyncResult =
+                gatewayCertificateService.ensureCertificate(savedGateway);
+        publishProvisioningIfRequired(certificateSyncResult);
+        return savedGateway;
     }
 
     @Transactional
     public Gateway updateGateway(UUID appUserId, UUID gatewayId, GatewayUpdateRequest request) {
         Gateway gateway = getGatewayById(appUserId, gatewayId);
         AppDomain appDomain = domainService.getDomainById(appUserId, request.appDomainId());
+        validateVerifiedDomain(appDomain);
 
         gateway.update(
                 appDomain,
@@ -75,7 +93,11 @@ public class GatewayService {
                 request.status()
         );
 
-        return gatewayRepository.save(gateway);
+        Gateway savedGateway = gatewayRepository.save(gateway);
+        GatewayCertificateService.CertificateSyncResult certificateSyncResult =
+                gatewayCertificateService.ensureCertificate(savedGateway);
+        publishProvisioningIfRequired(certificateSyncResult);
+        return savedGateway;
     }
 
     @Transactional
@@ -102,5 +124,19 @@ public class GatewayService {
             builder.append(UNIQUE_KEY_CHARACTERS.charAt(randomIndex));
         }
         return builder.toString();
+    }
+
+    private void publishProvisioningIfRequired(GatewayCertificateService.CertificateSyncResult certificateSyncResult) {
+        if (certificateSyncResult.provisioningRequired()) {
+            applicationEventPublisher.publishEvent(
+                    new GatewayCertificateProvisionRequested(certificateSyncResult.certificate().getId())
+            );
+        }
+    }
+
+    private void validateVerifiedDomain(AppDomain appDomain) {
+        if (appDomain.getStatus() != DomainStatus.VERIFIED) {
+            throw new IllegalArgumentException("Gateway can only be created for a verified domain");
+        }
     }
 }

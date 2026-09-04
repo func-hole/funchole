@@ -60,6 +60,10 @@ logging:
     org.springframework.security: INFO
 
 app:
+  certificate:
+    provider: ${CERTIFICATE_PROVIDER:SELF_SIGNED}
+    self-signed-validity-days: ${CERTIFICATE_SELF_SIGNED_VALIDITY_DAYS:30}
+    retry-delay-ms: ${CERTIFICATE_RETRY_DELAY_MS:60000}
   security:
     jwt:
       secret: ${JWT_SECRET:ZGV2LXNlY3JldC1mb3ItZnVuY2hvbGUtYmFja2VuZC1jaGFuZ2UtbWUtYmVmb3JlLXByb2QteHl6MTIzNDU2Nzg5MDEyMw==}

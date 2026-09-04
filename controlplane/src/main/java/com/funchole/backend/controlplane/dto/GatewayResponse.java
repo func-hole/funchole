@@ -12,6 +12,7 @@ public record GatewayResponse(
         String uniqueKey,
         String description,
         GatewayStatus status,
+        CertificateSummaryResponse certificate,
         OffsetDateTime createdAt,
         OffsetDateTime updatedAt
 ) {

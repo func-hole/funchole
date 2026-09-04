@@ -5,6 +5,7 @@ plugins {
 description = 'Runnable Spring Boot controlplane application.'
 
 dependencies {
+    implementation project(':certificate')
     implementation project(':core')
 
     implementation 'org.springframework.boot:spring-boot-starter-actuator'

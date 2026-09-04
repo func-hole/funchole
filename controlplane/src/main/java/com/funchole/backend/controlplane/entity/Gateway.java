@@ -9,6 +9,7 @@ import jakarta.persistence.FetchType;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
+import jakarta.persistence.OneToOne;
 import jakarta.persistence.Table;
 import java.time.OffsetDateTime;
 import java.util.UUID;
@@ -47,6 +48,9 @@ public class Gateway {
     @Column(name = "updated_at", nullable = false)
     private OffsetDateTime updatedAt;
 
+    @OneToOne(mappedBy = "gateway", fetch = FetchType.LAZY)
+    private GatewayCertificate certificate;
+
     public UUID getId() {
         return id;
     }
@@ -83,6 +87,10 @@ public class Gateway {
         return updatedAt;
     }
 
+    public GatewayCertificate getCertificate() {
+        return certificate;
+    }
+
     public void update(AppDomain appDomain, String name, String uniqueKey, String description, GatewayStatus status) {
         this.appDomain = appDomain;
         this.name = name;
@@ -90,6 +98,10 @@ public class Gateway {
         this.description = description;
         this.status = status;
         this.updatedAt = OffsetDateTime.now();
+    }
+
+    public void attachCertificate(GatewayCertificate certificate) {
+        this.certificate = certificate;
     }
 
     public static Gateway create(
