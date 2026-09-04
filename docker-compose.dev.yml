@@ -13,12 +13,19 @@ services:
         condition: service_started
     environment:
       BAO_ADDR: http://openbao:8200
-      BAO_TOKEN: dev-only-root-token
+      BAO_TOKEN_FILE: /openbao/bootstrap/root-token
       DNS_SERVICE_NAME: dns
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:7080/actuator/health >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 20s
     ports:
       - "7080:7080"
     volumes:
       - .:/workspace
+      - openbao-dev-data:/openbao:ro
     entrypoint: ["sh", "/workspace/docker/controlplane-dev-entrypoint.sh"]
     networks:
       - funchole-dev-network
@@ -33,13 +40,16 @@ services:
         condition: service_healthy
       openbao-init:
         condition: service_completed_successfully
+      controlplane:
+        condition: service_healthy
     environment:
       BAO_ADDR: http://openbao:8200
-      BAO_TOKEN: dev-only-root-token
+      BAO_TOKEN_FILE: /openbao/bootstrap/root-token
     ports:
-      - "7081:7081"
+      - "443:443"
     volumes:
       - .:/workspace
+      - openbao-dev-data:/openbao:ro
     entrypoint: ["sh", "/workspace/docker/gateway-dev-entrypoint.sh"]
     networks:
       - funchole-dev-network
@@ -48,10 +58,10 @@ services:
     image: docker.io/openbao/openbao:2.6.1
     cap_add:
       - IPC_LOCK
-    command: ["server", "-dev", "-dev-listen-address=0.0.0.0:8200", "-dev-root-token-id=dev-only-root-token"]
+    command: ["server", "-config=/etc/openbao/local.hcl"]
     environment:
       BAO_ADDR: http://127.0.0.1:8200
-      BAO_API_ADDR: http://127.0.0.1:8200
+      BAO_API_ADDR: http://openbao:8200
     healthcheck:
       test: ["CMD-SHELL", "BAO_ADDR=http://127.0.0.1:8200 bao status >/dev/null 2>&1"]
       interval: 5s
@@ -60,7 +70,8 @@ services:
     ports:
       - "8200:8200"
     volumes:
-      - openbao-dev-data:/openbao/data
+      - openbao-dev-data:/openbao
+      - ./docker/openbao/local.hcl:/etc/openbao/local.hcl:ro
     networks:
       - funchole-dev-network
 
@@ -68,13 +79,14 @@ services:
     image: curlimages/curl:8.15.0
     depends_on:
       openbao:
-        condition: service_healthy
+        condition: service_started
     environment:
       BAO_ADDR: http://openbao:8200
-      BAO_TOKEN: dev-only-root-token
+      OPENBAO_STATE_DIR: /openbao/bootstrap
     volumes:
       - ./docker/openbao-init/init-openbao.sh:/init-openbao.sh:ro
       - ./docker/openbao-init/secrets:/secrets:ro
+      - openbao-dev-data:/openbao
     entrypoint: ["/bin/sh", "/init-openbao.sh"]
     networks:
       - funchole-dev-network

@@ -46,7 +46,7 @@ FROM runtime-base AS gateway
 COPY --from=build-gateway /workspace/gateway/build/libs/funchole-gateway.jar app.jar
 COPY docker/gateway-entrypoint.sh /opt/funchole/entrypoint.sh
 RUN chmod +x /opt/funchole/entrypoint.sh
-EXPOSE 7081
+EXPOSE 443
 ENTRYPOINT ["/opt/funchole/entrypoint.sh"]
 
 FROM eclipse-temurin:25-jdk AS dev-base-common

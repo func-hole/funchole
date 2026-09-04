@@ -11,9 +11,35 @@ require_env() {
   fi
 }
 
+require_bao_token_source() {
+  if [ -n "${BAO_TOKEN:-}" ]; then
+    return
+  fi
+
+  if [ -n "${BAO_TOKEN_FILE:-}" ] && [ -f "${BAO_TOKEN_FILE}" ]; then
+    return
+  fi
+
+  echo "Missing OpenBao token source. Set BAO_TOKEN or BAO_TOKEN_FILE." >&2
+  exit 1
+}
+
+load_bao_token() {
+  if [ -n "${BAO_TOKEN:-}" ]; then
+    return
+  fi
+
+  require_bao_token_source
+  BAO_TOKEN="$(tr -d '\r\n' < "${BAO_TOKEN_FILE}")"
+  if [ -z "${BAO_TOKEN}" ]; then
+    echo "OpenBao token file is empty: ${BAO_TOKEN_FILE}" >&2
+    exit 1
+  fi
+  export BAO_TOKEN
+}
+
 wait_for_openbao() {
   require_env BAO_ADDR
-  require_env BAO_TOKEN
 
   attempts=0
   until curl -fsS "$BAO_ADDR/v1/sys/health" >/dev/null 2>&1; do
@@ -29,6 +55,7 @@ wait_for_openbao() {
 fetch_secret_field() {
   secret_path="$1"
   field_name="$2"
+  load_bao_token
 
   response="$(curl -fsS \
     -H "X-Vault-Token: $BAO_TOKEN" \
@@ -45,6 +72,7 @@ fetch_secret_field() {
 
 export_secret_document() {
   secret_path="$1"
+  load_bao_token
 
   response="$(curl -fsS \
     -H "X-Vault-Token: $BAO_TOKEN" \

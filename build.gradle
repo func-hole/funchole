@@ -14,6 +14,7 @@ ext {
     springdocVersion = '3.0.3'
     jwtVersion = '0.13.0'
     dnsjavaVersion = '3.6.5'
+    bouncyCastleVersion = '1.81'
 }
 
 allprojects {

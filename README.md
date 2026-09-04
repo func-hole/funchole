@@ -46,12 +46,13 @@ The goal is to provide a self-hosted function platform where:
 The development environment in `[docker-compose.dev.yml](/Users/rafsan/Workspare/FuncHole/backend/docker-compose.dev.yml)` includes:
 
 * `controlplane` on `http://localhost:7080`
-* `gateway` on `http://localhost:7081`
+* `gateway` on `https://localhost`
 * PostgreSQL on `localhost:5432`
 * OpenBao on `http://localhost:8200`
 * Technitium DNS on `localhost:53` with the admin UI on `http://localhost:5380`
 
 Technitium is there for local DNS experimentation during development. Its state is persisted in the Docker volume `technitium-dev-data`.
+OpenBao now runs with persistent local storage instead of in-memory dev mode, so certificate bundles and app secrets survive container restarts.
 
 The current dev defaults are:
 
@@ -254,13 +255,12 @@ It delegates execution through the Invocation Engine.
 A future public request may look like:
 
 ```text
-https://f12344.g1.example.com/orders/10
+https://g1.example.com/orders/10
 ```
 
 The Gateway can resolve the hostname as:
 
 ```text
-function_key = f12344
 gateway_key  = g1
 domain       = example.com
 ```
@@ -327,24 +327,26 @@ The Gateway receives the namespace:
 g1.example.com
 ```
 
-and its functions live underneath:
+and routes traffic by path underneath that host:
 
 ```text
-*.g1.example.com
+/orders
+/billing/webhook
+/functions/f12344
 ```
 
 For example:
 
 ```text
-f12344.g1.example.com
-f99210.g1.example.com
-f81abc.g1.example.com
+g1.example.com/orders
+g1.example.com/functions/f12344
+g1.example.com/billing/webhook
 ```
 
-A wildcard DNS record can direct the complete namespace toward one or more Gateway instances:
+The gateway host can direct traffic toward one or more Gateway instances:
 
 ```text
-*.g1.example.com
+g1.example.com
         ↓
    Load Balancer
         ↓
@@ -353,7 +355,7 @@ A wildcard DNS record can direct the complete namespace toward one or more Gatew
 GW-1    GW-2    GW-3
 ```
 
-This avoids creating a DNS record for every individual function.
+This avoids creating separate DNS records for every individual function route.
 
 ---
 
@@ -368,10 +370,10 @@ name         = create-order
 function_key = f12344
 ```
 
-Its hostname becomes:
+Its public route can live under:
 
 ```text
-f12344.g1.example.com
+g1.example.com/functions/f12344
 ```
 
 Renaming:
@@ -391,7 +393,7 @@ does not need to change its stable network identity.
 The hostname can be derived from:
 
 ```text
-{function_key}.{gateway_key}.{domain}
+{gateway_key}.{domain}
 ```
 
 and therefore does not need to be duplicated as persistent state.
@@ -554,7 +556,7 @@ Strong hostile multi-tenancy will require operating-system or virtual-machine-le
 
 # Certificate Management
 
-TLS certificates belong to **Gateway namespaces**, not individual functions.
+TLS certificates belong to **Gateway hosts**, not individual functions.
 
 For:
 
@@ -567,18 +569,17 @@ the Gateway certificate can cover:
 
 ```text
 g1.example.com
-*.g1.example.com
 ```
 
-Therefore a function created later:
+Functions are routed by path under the same gateway host, for example:
 
 ```text
-f12344.g1.example.com
+g1.example.com/orders
 ```
 
-is already covered by the Gateway certificate.
+and are already covered by the gateway certificate for `g1.example.com`.
 
-There is no need to issue a new certificate for every function.
+There is no need to issue a new certificate for every function route.
 
 ---
 
@@ -637,13 +638,7 @@ Local development can use self-signed certificates.
 
 Production deployments can use Let's Encrypt through ACME.
 
-For wildcard certificates such as:
-
-```text
-*.g1.example.com
-```
-
-production certificate issuance will require an appropriate DNS-based ACME validation flow.
+Production certificate issuance will later require an appropriate ACME validation flow for the gateway hostnames managed by FuncHole.
 
 ---
 
@@ -670,11 +665,11 @@ In-Memory TLS Registry
 Incoming TLS connections can then select the appropriate `SslContext` from memory.
 
 ```text
-f12344.g1.example.com
+g1.example.com
         ↓
        SNI
         ↓
-*.g1.example.com
+g1.example.com
         ↓
 In-Memory SslContext
 ```
@@ -815,6 +810,7 @@ FuncHole is organized as a Gradle multi-module project.
 
 ```text
 funchole/
+├── certificate/
 ├── controlplane/
 ├── core/
 ├── docker/
@@ -831,13 +827,14 @@ Current modules:
 
 | Module         | Responsibility                                              |
 | -------------- | ----------------------------------------------------------- |
+| `certificate`  | Shared certificate contracts, generators, and bundle models |
 | `core`         | Shared base classes, response wrappers, and common concerns |
 | `controlplane` | Spring Boot management application                          |
 | `gateway`      | Standalone raw Netty ingress service                        |
 | `invocation`   | Function invocation and orchestration layer                 |
 | `runtime`      | Function execution and runtime abstraction                  |
 
-A dedicated framework-independent `certificate` module is part of the planned architecture.
+A dedicated framework-independent `certificate` module is now part of the architecture.
 
 ---
 
@@ -1014,18 +1011,22 @@ If the application fails to compile or start, the watcher now stays idle and wai
 The Gateway currently runs on:
 
 ```text
-http://localhost:7081
+https://localhost
 ```
 
 Health check:
 
 ```bash
-curl http://localhost:7081/health
+curl -k https://localhost/health
 ```
 
 The Gateway is intentionally **not a Spring Boot application**.
 
 It is a standalone Java application using Netty.
+
+In this HTTPS-first slice, the Gateway expects at least one active gateway certificate to be provisioned before startup so it can build its in-memory TLS registry.
+
+For local browser testing, a hostname such as `gb3xip.funchole.test` should point to your machine's IPv4 address and then resolve directly through `https://gb3xip.funchole.test/` without an extra port in the URL. Because local development currently uses self-signed certificates, the browser will still show a trust warning until that certificate or issuing CA is trusted on the machine.
 
 ---
 
