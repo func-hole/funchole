@@ -15,9 +15,10 @@ DNS_SERVICE_NAME="${DNS_SERVICE_NAME:-dns}"
 DNS_SERVER_IP="$(getent hosts "${DNS_SERVICE_NAME}" | awk 'NR==1 { print $1 }')"
 
 if [ -n "${DNS_SERVER_IP}" ]; then
-    export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:-} -Ddns.server=${DNS_SERVER_IP}"
+    export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:-} -Ddns.server=${DNS_SERVER_IP} -Dspring.devtools.restart.enabled=false"
     echo "Resolved ${DNS_SERVICE_NAME} to ${DNS_SERVER_IP} for dnsjava"
 else
+    export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:-} -Dspring.devtools.restart.enabled=false"
     echo "Could not resolve ${DNS_SERVICE_NAME}; dnsjava will use its default resolver configuration"
 fi
 
