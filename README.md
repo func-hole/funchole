@@ -68,7 +68,7 @@ Invocation   -> future orchestration and dispatch layer
 Runtime      -> future execution layer
 ```
 
-More detailed architecture notes live in [docs/architecture.md](/Users/rafsan/Workspare/FuncHole/backend/docs/architecture.md).
+More detailed architecture notes live in [docs/architecture.md](docs/architecture.md).
 
 ## Repository Layout
 
@@ -143,15 +143,19 @@ curl http://localhost:7080/api/v1/system/ping
 curl -k https://localhost/health
 ```
 
-More setup and local workflow details live in [docs/development.md](/Users/rafsan/Workspare/FuncHole/backend/docs/development.md).
+More setup and local workflow details live in [docs/development.md](docs/development.md).
 
 ## Documentation
 
 Project docs:
 
-* [docs/architecture.md](/Users/rafsan/Workspare/FuncHole/backend/docs/architecture.md)
-* [docs/development.md](/Users/rafsan/Workspare/FuncHole/backend/docs/development.md)
-* [contribute.md](/Users/rafsan/Workspare/FuncHole/backend/contribute.md)
+* [docs/architecture.md](docs/architecture.md)
+* [docs/development.md](docs/development.md)
+* [CONTRIBUTING.md](CONTRIBUTING.md)
+
+## Community
+
+Join the FuncHole Discord server: [https://discord.gg/yS8etyU7p](https://discord.gg/yS8etyU7p)
 
 ## Local Development Notes
 
@@ -165,7 +169,7 @@ Important current behavior:
 
 ## Contribution
 
-Please read [contribute.md](/Users/rafsan/Workspare/FuncHole/backend/contribute.md) before making architectural or persistence-related changes.
+Please read [CONTRIBUTING.md](CONTRIBUTING.md) before making architectural or persistence-related changes.
 
 ## Project Direction
 

@@ -6,8 +6,8 @@ This document keeps the practical local development notes that do not need to st
 
 There are two main Compose entrypoints:
 
-* [docker-compose.dev.yml](/Users/rafsan/Workspare/FuncHole/backend/docker-compose.dev.yml) for source-mounted development
-* [docker-compose.yml](/Users/rafsan/Workspare/FuncHole/backend/docker-compose.yml) for built-container startup
+* [docker-compose.dev.yml](../docker-compose.dev.yml) for source-mounted development
+* [docker-compose.yml](../docker-compose.yml) for built-container startup
 
 Recommended command for day-to-day work:
 

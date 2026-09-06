@@ -8,9 +8,9 @@ This backend is still in active foundation work, so the most helpful contributio
 
 Please read:
 
-* [README.md](/Users/rafsan/Workspare/FuncHole/backend/README.md)
-* [docs/architecture.md](/Users/rafsan/Workspare/FuncHole/backend/docs/architecture.md)
-* [docs/development.md](/Users/rafsan/Workspare/FuncHole/backend/docs/development.md)
+* [README.md](README.md)
+* [docs/architecture.md](docs/architecture.md)
+* [docs/development.md](docs/development.md)
 * the relevant module you want to change
 * existing Docker and migration setup if your change affects local development or persistence
 
