@@ -75,6 +75,25 @@ services:
     networks:
       - funchole-dev-network
 
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev-web
+    depends_on:
+      controlplane:
+        condition: service_healthy
+    environment:
+      NEXT_PUBLIC_CONTROLPLANE_URL: http://localhost:7080
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./control-plane-web:/workspace/web
+      - web-node-modules:/workspace/web/node_modules
+    command: ["sh", "-c", "npm install --no-audit --no-fund && npm run dev"]
+    networks:
+      - funchole-dev-network
+
   openbao-init:
     image: curlimages/curl:8.15.0
     depends_on:
@@ -127,6 +146,7 @@ volumes:
   postgres-dev-data:
   openbao-dev-data:
   technitium-dev-data:
+  web-node-modules:
 
 networks:
   funchole-dev-network:

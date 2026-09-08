@@ -49,6 +49,26 @@ RUN chmod +x /opt/funchole/entrypoint.sh
 EXPOSE 443
 ENTRYPOINT ["/opt/funchole/entrypoint.sh"]
 
+FROM node:22-alpine AS build-web
+WORKDIR /workspace/web
+COPY control-plane-web/package.json control-plane-web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY control-plane-web/ ./
+RUN npm run build
+
+FROM node:22-alpine AS web
+WORKDIR /app
+ENV NODE_ENV=production HOSTNAME=0.0.0.0 PORT=3000
+COPY --from=build-web /workspace/web/.next/standalone ./
+COPY --from=build-web /workspace/web/.next/static ./.next/static
+COPY --from=build-web /workspace/web/public ./public
+EXPOSE 3000
+CMD ["node", "server.js"]
+
+FROM node:22-alpine AS dev-web
+WORKDIR /workspace/web
+CMD ["npm", "run", "dev"]
+
 FROM eclipse-temurin:25-jdk AS dev-base-common
 WORKDIR /workspace
 ENV GRADLE_USER_HOME=/opt/gradle-home

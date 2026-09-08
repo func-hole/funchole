@@ -68,6 +68,21 @@ services:
     networks:
       - funchole-network
 
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: web
+    depends_on:
+      controlplane:
+        condition: service_healthy
+    environment:
+      NEXT_PUBLIC_CONTROLPLANE_URL: http://localhost:7080
+    ports:
+      - "3000:3000"
+    networks:
+      - funchole-network
+
   openbao-init:
     image: curlimages/curl:8.15.0
     depends_on:
