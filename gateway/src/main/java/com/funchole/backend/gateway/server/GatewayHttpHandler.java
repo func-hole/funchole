@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.funchole.backend.gateway.GatewayRegistry;
 import com.funchole.backend.gateway.GatewayRequestContext;
 import com.funchole.backend.gateway.GatewayRuntimeEntry;
+import com.funchole.backend.gateway.flow.FlowResolution;
 import com.funchole.backend.gateway.flow.FlowResolver;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelFutureListener;
@@ -18,6 +19,7 @@ import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.HttpVersion;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import java.util.Optional;
 
 @ChannelHandler.Sharable
 public final class GatewayHttpHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
@@ -67,29 +69,35 @@ public final class GatewayHttpHandler extends SimpleChannelInboundHandler<FullHt
             return;
         }
 
-        if (flowResolver.resolve(gateway, requestContext).isEmpty()) {
-            writeJson(context, HttpResponseStatus.OK, Map.of(
-                    "success", true,
-                    "message", "Gateway ready for taking request",
-                    "data", Map.of(
-                            "gatewayId", gateway.gatewayId().toString(),
-                            "gatewayName", gateway.gatewayName(),
-                            "gatewayKey", gateway.gatewayKey(),
-                            "domainName", gateway.domainName(),
-                            "hostname", gateway.hostname(),
-                            "path", requestContext.path(),
-                            "method", requestContext.method(),
-                            "flowResolved", false
-                    )
+        Optional<FlowResolution> resolution = flowResolver.resolve(gateway, requestContext);
+        if (resolution.isEmpty()) {
+            writeJson(context, HttpResponseStatus.NOT_FOUND, Map.of(
+                    "success", false,
+                    "message", "Route not found",
+                    "host", requestContext.hostname(),
+                    "path", requestContext.path(),
+                    "method", requestContext.method()
             ));
             return;
         }
 
-        writeJson(context, HttpResponseStatus.NOT_FOUND, Map.of(
-                "success", false,
-                "message", "Route not found",
-                "host", requestContext.hostname(),
-                "path", requestContext.path()
+        FlowResolution flow = resolution.get();
+        writeJson(context, HttpResponseStatus.OK, Map.of(
+                "success", true,
+                "message", "Route resolved",
+                "data", Map.ofEntries(
+                        Map.entry("gatewayId", gateway.gatewayId().toString()),
+                        Map.entry("gatewayName", gateway.gatewayName()),
+                        Map.entry("gatewayKey", gateway.gatewayKey()),
+                        Map.entry("domainName", gateway.domainName()),
+                        Map.entry("hostname", gateway.hostname()),
+                        Map.entry("path", requestContext.path()),
+                        Map.entry("method", requestContext.method()),
+                        Map.entry("flowResolved", true),
+                        Map.entry("flowId", flow.flowId().toString()),
+                        Map.entry("flowKey", flow.flowKey()),
+                        Map.entry("flowVersionId", flow.flowVersionId().toString())
+                )
         ));
     }
 

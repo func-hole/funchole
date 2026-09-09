@@ -3,6 +3,9 @@ package com.funchole.backend.gateway;
 import com.funchole.backend.certificate.CertificateBundle;
 import com.funchole.backend.certificate.CertificateReference;
 import com.funchole.backend.certificate.store.CertificateLoader;
+import com.funchole.backend.gateway.flow.FlowResolution;
+import com.funchole.backend.gateway.flow.GatewayRoutingSnapshot;
+import com.funchole.backend.gateway.flow.RouteKey;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
 import io.netty.handler.ssl.util.SelfSignedCertificate;
@@ -11,6 +14,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -36,15 +40,59 @@ public final class GatewayRegistryLoader {
             SslContext defaultContext = entries.isEmpty()
                     ? createFallbackSslContext()
                     : entries.values().iterator().next().sslContext();
+            Map<UUID, GatewayRoutingSnapshot> routingByGatewayId = loadRouting();
 
             if (entries.isEmpty()) {
                 logger.warn("No active gateway certificates were found. Gateway will start with a fallback TLS context and return unknown-host responses until gateways are provisioned.");
             }
 
-            return new GatewayRegistrySnapshot(Map.copyOf(entries), defaultContext);
+            return new GatewayRegistrySnapshot(Map.copyOf(entries), defaultContext, routingByGatewayId);
         } catch (SQLException exception) {
             throw new IllegalStateException("Failed to load gateway registry", exception);
         }
+    }
+
+    private Map<UUID, GatewayRoutingSnapshot> loadRouting() throws SQLException {
+        Map<UUID, Map<RouteKey, FlowResolution>> routesByGatewayId = new LinkedHashMap<>();
+        try (
+                Connection connection = dataSource.getConnection();
+                PreparedStatement statement = connection.prepareStatement("""
+                        select
+                            f.gateway_id,
+                            f.http_method,
+                            f.path,
+                            f.id as flow_id,
+                            f.flow_key,
+                            f.active_flow_version_id
+                        from flows f
+                        join gateways g on g.id = f.gateway_id
+                        where f.deleted_at is null
+                          and f.active_flow_version_id is not null
+                          and f.active_flow_version_status = 'ADOPTED'
+                          and g.status = 'ACTIVE'
+                        """)
+        ) {
+            try (ResultSet resultSet = statement.executeQuery()) {
+                while (resultSet.next()) {
+                    UUID gatewayId = UUID.fromString(resultSet.getString("gateway_id"));
+                    RouteKey routeKey = new RouteKey(
+                            resultSet.getString("http_method"),
+                            resultSet.getString("path")
+                    );
+                    FlowResolution resolution = new FlowResolution(
+                            UUID.fromString(resultSet.getString("flow_id")),
+                            resultSet.getString("flow_key"),
+                            UUID.fromString(resultSet.getString("active_flow_version_id"))
+                    );
+                    routesByGatewayId.computeIfAbsent(gatewayId, key -> new HashMap<>()).put(routeKey, resolution);
+                }
+            }
+        }
+
+        Map<UUID, GatewayRoutingSnapshot> routingByGatewayId = new LinkedHashMap<>();
+        routesByGatewayId.forEach((gatewayId, routes) ->
+                routingByGatewayId.put(gatewayId, new GatewayRoutingSnapshot(Map.copyOf(routes))));
+        return Map.copyOf(routingByGatewayId);
     }
 
     private Map<String, GatewayRuntimeEntry> loadEntries() throws SQLException {

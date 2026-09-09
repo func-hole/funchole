@@ -1,9 +1,11 @@
 package com.funchole.backend.gateway;
 
+import com.funchole.backend.gateway.flow.GatewayRoutingSnapshot;
 import io.netty.handler.ssl.SslContext;
 import io.netty.util.Mapping;
 import java.util.Collection;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 
 public final class GatewayRegistry {
@@ -31,6 +33,10 @@ public final class GatewayRegistry {
             return entry.sslContext();
         }
         return currentSnapshot().defaultSslContext();
+    }
+
+    public GatewayRoutingSnapshot routingFor(UUID gatewayId) {
+        return currentSnapshot().routingByGatewayId().getOrDefault(gatewayId, GatewayRoutingSnapshot.EMPTY);
     }
 
     public void replace(GatewayRegistrySnapshot nextSnapshot) {

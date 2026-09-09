@@ -2,7 +2,7 @@ package com.funchole.backend.gateway;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.funchole.backend.gateway.flow.FlowResolver;
-import com.funchole.backend.gateway.flow.NoopFlowResolver;
+import com.funchole.backend.gateway.flow.SnapshotFlowResolver;
 import com.funchole.backend.gateway.server.GatewayHttpHandler;
 import com.funchole.backend.gateway.server.GatewayServer;
 import com.zaxxer.hikari.HikariConfig;
@@ -30,7 +30,7 @@ public final class GatewayMain {
         );
         GatewayRegistryLoader gatewayRegistryLoader = new GatewayRegistryLoader(dataSource, certificateLoader);
         GatewayRegistry gatewayRegistry = new GatewayRegistry(loadGatewayRegistry(gatewayRegistryLoader));
-        FlowResolver flowResolver = new NoopFlowResolver();
+        FlowResolver flowResolver = new SnapshotFlowResolver(gatewayRegistry);
         GatewayHttpHandler gatewayHttpHandler = new GatewayHttpHandler(objectMapper, gatewayRegistry, flowResolver);
         GatewayServer gatewayServer = new GatewayServer(port, gatewayRegistry, gatewayHttpHandler);
         ScheduledExecutorService registryRefreshExecutor = createRegistryRefreshExecutor();
