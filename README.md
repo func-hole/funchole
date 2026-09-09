@@ -43,6 +43,10 @@ Not implemented yet:
 
 * flow routing
 * invocation orchestration
+* invocation registry
+* invocation dispatcher
+* runtime registry
+* NATS + JetStream based global coordination
 * runtime execution
 * production ACME / Let's Encrypt flow
 * automatic host-machine DNS setup for custom local domains
@@ -62,11 +66,68 @@ FuncHole is exploring a different model:
 ## Architecture At A Glance
 
 ```text
-Controlplane -> owns auth, domains, gateways, certificates, metadata
-Gateway      -> serves HTTPS, resolves host, normalizes request, returns gateway response
-Invocation   -> future orchestration and dispatch layer
-Runtime      -> future execution layer
+Controlplane         -> owns auth, domains, gateways, certificates, flows, metadata
+Gateway              -> resolves request host/path to the Flow that should be invoked
+Invocation Registry  -> freezes the immutable Flow/dependency graph for one invocation
+NATS + JetStream     -> coordinates distributed components globally
+Invocation Dispatcher -> chooses the next executable step and requests runtime capacity
+Runtime Registry     -> prepares/selects runtime and artifact capacity
+IPC                  -> carries local hot-path execution messages
+Runtime / Artifact   -> executes the selected component version
 ```
+
+Architectural principle:
+
+> Global coordination is event-driven; local execution is IPC-driven.
+
+```mermaid
+flowchart LR
+    client["Client Request"]
+    gateway["Gateway"]
+    registry["Invocation Registry"]
+    jetstream["NATS JetStream"]
+    dispatcher["Invocation Dispatcher"]
+    runtimeRegistry["Runtime Registry"]
+    ipc["IPC"]
+    runtime["Runtime / Artifact"]
+
+    client --> gateway
+    gateway -->|"Which Flow should this request invoke?"| registry
+    registry -->|"Invocation ready: invocationId"| jetstream
+    jetstream --> dispatcher
+    dispatcher -->|"What executes next?"| runtimeRegistry
+    runtimeRegistry -->|"Local execution target"| ipc
+    ipc --> runtime
+    runtime --> ipc
+    ipc --> dispatcher
+    dispatcher -->|"Completion state"| registry
+    registry -->|"Invocation completed/failed"| jetstream
+    jetstream -->|"Completion notification"| gateway
+    gateway --> client
+```
+
+NATS + JetStream is the global coordination layer. JetStream is used for durable invocation lifecycle and state-transition events where delivery must survive consumer or service restarts, such as invocation ready, invocation completed, and invocation failed.
+
+JetStream events should primarily identify the invocation, for example with an `invocationId`. The complete dependency graph should not be sent through JetStream. The Invocation Registry remains the durable source of truth for the immutable Flow version, dependency graph, pinned component versions, invocation status, and result state.
+
+```text
+Invocation Registry
+        │
+        │ invocationId
+        ▼
+   NATS JetStream
+        │
+        ▼
+Invocation Dispatcher
+        │
+        │ load immutable invocation snapshot
+        ▼
+Invocation Registry
+```
+
+NATS + JetStream is not a replacement for IPC. IPC is not intended to become the global distributed communication mechanism. NATS + JetStream provides durable, decoupled global coordination between services and nodes. IPC remains the optimized local execution path between runtime-facing components and prepared runtimes/artifacts.
+
+Event schemas, NATS subjects, stream names, consumer configuration, retention policies, retry counts, scheduling algorithms, and runtime persistence details are future design work. They are intentionally not decided by this README.
 
 More detailed architecture notes live in [docs/architecture.md](docs/architecture.md).
 
@@ -98,6 +159,17 @@ funchole/
 | `gateway` | Standalone raw Netty HTTPS ingress service |
 | `invocation` | Future invocation/orchestration layer |
 | `runtime` | Future execution/runtime layer |
+
+## Responsibility Summary
+
+| Area | Question it answers |
+| --- | --- |
+| Gateway | Which Flow should this request invoke? |
+| Invocation Registry | What exact immutable Flow/dependency graph belongs to this invocation? |
+| Invocation Dispatcher | What executes next, what input does it require, and where should execution be scheduled? |
+| Runtime Registry | Which runtime capacity is available and how should the required runtime/artifact be prepared? |
+| NATS + JetStream | How distributed components coordinate globally. |
+| IPC | How local runtime execution communicates efficiently. |
 
 ## Technology Stack
 

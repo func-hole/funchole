@@ -9,8 +9,8 @@ FuncHole is being designed around four major backend areas:
 ```text
 Controlplane -> What should exist?
 Gateway      -> Where should a request go?
-Invocation   -> How should functions communicate?
-Runtime      -> How should a function execute?
+Invocation   -> What immutable execution graph should run?
+Runtime      -> Where and how should a component execute?
 ```
 
 At a high level:
@@ -20,12 +20,59 @@ Internet
    ↓
 Gateway
    ↓
-Invocation
+Invocation Registry
    ↓
-Runtime
+Event Bus
    ↓
-Function
+Invocation Dispatcher
+   ↓
+Runtime Registry
+   ↓
+IPC
+   ↓
+Runtime / Artifact
+   ↓
+Function / Component
 ```
+
+Core principle:
+
+> Global coordination is event-driven; local execution is IPC-driven.
+
+Event Bus and IPC solve different problems. The Event Bus coordinates distributed components globally. IPC remains the optimized local execution path once runtime capacity has been selected or prepared.
+
+```mermaid
+flowchart LR
+    gateway["Gateway"]
+    invocationRegistry["Invocation Registry"]
+    eventBus["Event Bus"]
+    dispatcher["Invocation Dispatcher"]
+    runtimeRegistry["Runtime Registry"]
+    ipc["IPC"]
+    runtime["Runtime / Artifact"]
+
+    gateway -->|"Flow identity"| invocationRegistry
+    invocationRegistry -->|"Frozen invocation graph"| eventBus
+    eventBus --> dispatcher
+    dispatcher -->|"Next step + runtime requirement"| runtimeRegistry
+    runtimeRegistry -->|"Prepared local target"| ipc
+    ipc --> runtime
+```
+
+The Event Bus is not introduced as a replacement for IPC. IPC is not intended to become the global distributed communication mechanism.
+
+## Responsibility Summary
+
+| Area | Responsibility |
+| --- | --- |
+| Gateway | Resolve the incoming host, method, and path to the Flow that should be invoked. |
+| Invocation Registry | Capture the exact immutable Flow/dependency graph for a specific invocation. |
+| Invocation Dispatcher | Decide what executes next, what input it needs, and where execution should be scheduled. |
+| Runtime Registry | Identify available runtime capacity and prepare the required runtime/artifact. |
+| Event Bus | Coordinate distributed components globally without tight service coupling. |
+| IPC | Carry efficient local execution communication between runtime-facing code and prepared runtimes/artifacts. |
+
+The current implementation has only the Gateway-side Flow seam. Invocation Registry, Event Bus, Invocation Dispatcher, Runtime Registry, and runtime behavior are future design and implementation work.
 
 ## Controlplane
 
@@ -192,31 +239,59 @@ This boundary helps keep sensitive data out of ordinary application tables.
 ```text
 Gateway
    ↓
-Invocation
+Invocation Registry
    ↓
-Runtime
+Event Bus
+   ↓
+Invocation Dispatcher
+   ↓
+Runtime Registry
+   ↓
+IPC
+   ↓
+Runtime / Artifact
    ↓
 Function
 ```
 
 Planned responsibilities:
 
-### Invocation
+### Invocation Registry
+
+* invocation creation
+* immutable dependency graph capture
+* pinned Flow, Sub-Flow, and component versions
+* invocation state persistence
+
+### Invocation Dispatcher
+
+* execution coordination
+* next-step resolution
+* step input resolution
+* runtime capacity requests
+* final result resolution
+
+### Runtime Registry
+
+* runtime capacity discovery
+* runtime and artifact preparation
+* runtime health and warmness tracking
+
+### Runtime / Artifact
+
+* local component execution
+
+Future concerns:
 
 * synchronous invoke
 * asynchronous dispatch
 * permission checks
 * trace propagation
-* orchestration behavior
-
-### Runtime
-
-* runtime selection
-* artifact preparation
 * environment injection
 * isolation
-* execution
 * timeout and resource control
+
+Exact event schemas, broker technology, retry policies, scheduling algorithms, and persistence structures are intentionally unresolved future design work.
 
 ## Framework Boundary Rule
 
