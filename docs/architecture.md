@@ -72,7 +72,7 @@ The Event Bus is not introduced as a replacement for IPC. IPC is not intended to
 | Event Bus | Coordinate distributed components globally without tight service coupling. |
 | IPC | Carry efficient local execution communication between runtime-facing code and prepared runtimes/artifacts. |
 
-The current implementation has only the Gateway-side Flow seam. Invocation Registry, Event Bus, Invocation Dispatcher, Runtime Registry, and runtime behavior are future design and implementation work.
+The current implementation has the Gateway-side Flow seam, Invocation Registry persistence, immutable dependency snapshots, NATS + JetStream ready-event publication, and a Dispatcher consumer that loads and ACKs ready invocations. Runtime Registry, IPC execution, runtime behavior, and full dispatcher orchestration are future design and implementation work.
 
 ## Controlplane
 

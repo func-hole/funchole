@@ -42,15 +42,52 @@ services:
         condition: service_completed_successfully
       controlplane:
         condition: service_healthy
+      nats:
+        condition: service_started
     environment:
       BAO_ADDR: http://openbao:8200
       BAO_TOKEN_FILE: /openbao/bootstrap/root-token
+      NATS_URL: nats://nats:4222
     ports:
       - "443:443"
     volumes:
       - .:/workspace
       - openbao-dev-data:/openbao:ro
     entrypoint: ["sh", "/workspace/docker/gateway-dev-entrypoint.sh"]
+    networks:
+      - funchole-dev-network
+
+  dispatcher:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev-dispatcher
+    depends_on:
+      db:
+        condition: service_healthy
+      controlplane:
+        condition: service_healthy
+      nats:
+        condition: service_started
+    environment:
+      NATS_URL: nats://nats:4222
+      DB_URL: jdbc:postgresql://db:5432/funchole
+      DB_USERNAME: funchole
+      DB_PASSWORD: funchole
+    volumes:
+      - .:/workspace
+    entrypoint: ["sh", "/workspace/docker/dispatcher-dev-entrypoint.sh"]
+    networks:
+      - funchole-dev-network
+
+  nats:
+    image: nats:2.14.6-alpine
+    command: ["-js", "-sd", "/data/jetstream", "-m", "8222"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    volumes:
+      - nats-dev-data:/data
     networks:
       - funchole-dev-network
 
@@ -147,6 +184,7 @@ volumes:
   openbao-dev-data:
   technitium-dev-data:
   web-node-modules:
+  nats-dev-data:
 
 networks:
   funchole-dev-network:

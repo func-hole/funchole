@@ -6,8 +6,11 @@ import com.funchole.backend.gateway.flow.SnapshotFlowResolver;
 import com.funchole.backend.gateway.server.GatewayHttpHandler;
 import com.funchole.backend.gateway.server.GatewayServer;
 import com.funchole.backend.invocation.JdbcInvocationRegistry;
+import com.funchole.backend.invocation.NatsJetStreamInvocationEventPublisher;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
+import io.nats.client.Connection;
+import io.nats.client.Nats;
 import javax.sql.DataSource;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -24,6 +27,7 @@ public final class GatewayMain {
     public static void main(String[] args) throws Exception {
         int port = readInt("GATEWAY_PORT", 443);
         DataSource dataSource = createDataSource();
+        Connection natsConnection = Nats.connect(readString("NATS_URL", "nats://localhost:4222"));
         ObjectMapper objectMapper = new ObjectMapper();
         OpenBaoCertificateLoader certificateLoader = new OpenBaoCertificateLoader(
                 readString("BAO_ADDR", "http://localhost:8200"),
@@ -36,7 +40,7 @@ public final class GatewayMain {
                 objectMapper,
                 gatewayRegistry,
                 flowResolver,
-                new JdbcInvocationRegistry(dataSource)
+                new JdbcInvocationRegistry(dataSource, new NatsJetStreamInvocationEventPublisher(natsConnection))
         );
         GatewayServer gatewayServer = new GatewayServer(port, gatewayRegistry, gatewayHttpHandler);
         ScheduledExecutorService registryRefreshExecutor = createRegistryRefreshExecutor();
@@ -47,6 +51,11 @@ public final class GatewayMain {
             registryRefreshExecutor.shutdownNow();
             if (dataSource instanceof HikariDataSource hikariDataSource) {
                 hikariDataSource.close();
+            }
+            try {
+                natsConnection.close();
+            } catch (InterruptedException interruptedException) {
+                Thread.currentThread().interrupt();
             }
         }));
 

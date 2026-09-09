@@ -11,6 +11,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.sql.Connection;
 import java.sql.Statement;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
@@ -32,6 +34,7 @@ class JdbcInvocationRegistryTest {
             .withPassword("funchole");
 
     private JdbcInvocationRegistry registry;
+    private CapturingInvocationEventPublisher eventPublisher;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -110,7 +113,8 @@ class JdbcInvocationRegistryTest {
                     )
                     """);
         }
-        registry = new JdbcInvocationRegistry(dataSource);
+        eventPublisher = new CapturingInvocationEventPublisher();
+        registry = new JdbcInvocationRegistry(dataSource, eventPublisher);
     }
 
     @Test
@@ -168,6 +172,34 @@ class JdbcInvocationRegistryTest {
         assertNotEquals(first.invocationId(), second.invocationId());
         assertTrue(registry.findById(first.invocationId()).isPresent());
         assertTrue(registry.findById(second.invocationId()).isPresent());
+    }
+
+    @Test
+    void publishesInvocationReadyAfterInvocationIsPersisted() {
+        UUID flowId = UUID.fromString("10000000-0000-0000-0000-000000000051");
+        UUID flowVersionId = UUID.fromString("20000000-0000-0000-0000-000000000051");
+        insertFlow(flowId, "flw_publish", flowVersionId, 1);
+
+        Invocation invocation = registry.create(new CreateInvocationRequest(flowId, "flw_publish", flowVersionId, "{}"));
+
+        assertEquals(1, eventPublisher.published.size());
+        assertEquals(invocation.invocationId(), eventPublisher.published.getFirst().invocationId());
+        assertTrue(registry.findById(invocation.invocationId()).isPresent());
+    }
+
+    @Test
+    void doesNotPublishInvocationReadyWhenPersistenceFails() {
+        assertThrows(
+                DependencyGraphResolutionException.class,
+                () -> registry.create(new CreateInvocationRequest(
+                        UUID.randomUUID(),
+                        "flw_missing",
+                        UUID.randomUUID(),
+                        "{}"
+                ))
+        );
+
+        assertTrue(eventPublisher.published.isEmpty());
     }
 
     @Test
@@ -381,6 +413,15 @@ class JdbcInvocationRegistryTest {
         ) {
             resultSet.next();
             return resultSet.getInt(1);
+        }
+    }
+
+    private static final class CapturingInvocationEventPublisher implements InvocationEventPublisher {
+        private final List<Invocation> published = new ArrayList<>();
+
+        @Override
+        public void publishInvocationReady(Invocation invocation) {
+            published.add(invocation);
         }
     }
 }

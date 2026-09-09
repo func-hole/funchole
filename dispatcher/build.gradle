@@ -2,34 +2,31 @@ plugins {
     id 'application'
 }
 
-description = 'Standalone raw Netty gateway service.'
+description = 'Standalone invocation dispatcher service.'
 
 dependencies {
-    implementation project(':certificate')
     implementation project(':invocation')
     implementation 'com.fasterxml.jackson.core:jackson-databind'
     implementation 'com.zaxxer:HikariCP'
-    implementation 'io.netty:netty-buffer'
-    implementation 'io.netty:netty-codec-http'
-    implementation 'io.netty:netty-common'
-    implementation 'io.netty:netty-handler'
-    implementation 'io.netty:netty-codec'
-    implementation 'io.netty:netty-transport'
     implementation "io.nats:jnats:${natsVersion}"
     implementation 'org.postgresql:postgresql'
     implementation 'org.slf4j:slf4j-simple'
+
+    testImplementation "org.testcontainers:testcontainers:${testcontainersVersion}"
+    testImplementation "org.testcontainers:testcontainers-junit-jupiter:${testcontainersVersion}"
+    testImplementation "org.testcontainers:testcontainers-postgresql:${testcontainersVersion}"
 
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
 application {
-    mainClass = 'com.funchole.backend.gateway.GatewayMain'
+    mainClass = 'com.funchole.backend.dispatcher.DispatcherMain'
 }
 
 tasks.register('fatJar', Jar) {
     group = 'build'
-    description = 'Assembles an executable fat jar for the gateway service.'
-    archiveFileName = 'funchole-gateway.jar'
+    description = 'Assembles an executable fat jar for the dispatcher service.'
+    archiveFileName = 'funchole-dispatcher.jar'
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
     manifest {
         attributes 'Main-Class': application.mainClass.get()

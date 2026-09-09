@@ -19,10 +19,16 @@ public final class JdbcInvocationRegistry implements InvocationRegistry {
 
     private final DataSource dataSource;
     private final ObjectMapper objectMapper;
+    private final InvocationEventPublisher eventPublisher;
 
     public JdbcInvocationRegistry(DataSource dataSource) {
+        this(dataSource, new NoopInvocationEventPublisher());
+    }
+
+    public JdbcInvocationRegistry(DataSource dataSource, InvocationEventPublisher eventPublisher) {
         this.dataSource = dataSource;
         this.objectMapper = new ObjectMapper();
+        this.eventPublisher = eventPublisher;
     }
 
     @Override
@@ -31,6 +37,7 @@ public final class JdbcInvocationRegistry implements InvocationRegistry {
         try (Connection connection = dataSource.getConnection()) {
             InvocationSnapshot snapshot = resolveSnapshot(connection, request);
             String dependencySnapshot = serializeSnapshot(snapshot);
+            Invocation invocation;
 
             try (PreparedStatement statement = connection.prepareStatement("""
                         insert into invocations (
@@ -55,11 +62,14 @@ public final class JdbcInvocationRegistry implements InvocationRegistry {
 
                 try (ResultSet resultSet = statement.executeQuery()) {
                     if (resultSet.next()) {
-                        return toInvocation(resultSet);
+                        invocation = toInvocation(resultSet);
+                    } else {
+                        throw new IllegalStateException("Invocation insert did not return a row");
                     }
                 }
-                throw new IllegalStateException("Invocation insert did not return a row");
             }
+            eventPublisher.publishInvocationReady(invocation);
+            return invocation;
         } catch (SQLException exception) {
             throw new IllegalStateException("Failed to create invocation", exception);
         }

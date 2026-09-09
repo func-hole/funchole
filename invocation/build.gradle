@@ -7,6 +7,7 @@ description = 'Invocation module placeholder for orchestration concerns.'
 dependencies {
     implementation project(':core')
     implementation 'com.fasterxml.jackson.core:jackson-databind'
+    implementation "io.nats:jnats:${natsVersion}"
     implementation 'org.postgresql:postgresql'
 
     testImplementation 'com.fasterxml.jackson.core:jackson-databind'

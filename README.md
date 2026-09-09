@@ -38,15 +38,15 @@ Implemented today:
 * self-signed certificate generation for local development
 * OpenBao-backed secret storage for certificate material
 * in-memory gateway TLS registry with short polling refresh
+* Invocation Registry with immutable dependency snapshot persistence
+* NATS + JetStream `INVOCATION_READY` publication
+* standalone `dispatcher` consumer that loads and ACKs ready invocations
 
 Not implemented yet:
 
-* flow routing
-* invocation orchestration
-* invocation registry
-* invocation dispatcher
+* flow execution
+* dispatcher orchestration beyond loading ready invocations
 * runtime registry
-* NATS + JetStream based global coordination
 * runtime execution
 * production ACME / Let's Encrypt flow
 * automatic host-machine DNS setup for custom local domains
@@ -127,7 +127,7 @@ Invocation Registry
 
 NATS + JetStream is not a replacement for IPC. IPC is not intended to become the global distributed communication mechanism. NATS + JetStream provides durable, decoupled global coordination between services and nodes. IPC remains the optimized local execution path between runtime-facing components and prepared runtimes/artifacts.
 
-Event schemas, NATS subjects, stream names, consumer configuration, retention policies, retry counts, scheduling algorithms, and runtime persistence details are future design work. They are intentionally not decided by this README.
+Additional event schemas, NATS subjects, stream names, advanced consumer configuration, retention policies, retry counts, scheduling algorithms, and runtime persistence details are future design work. They are intentionally not decided by this README.
 
 More detailed architecture notes live in [docs/architecture.md](docs/architecture.md).
 
@@ -142,6 +142,7 @@ funchole/
 ├── docs/
 ├── gateway/
 ├── invocation/
+├── dispatcher/
 ├── runtime/
 ├── Dockerfile
 ├── docker-compose.yml
@@ -157,7 +158,8 @@ funchole/
 | `controlplane` | Spring Boot management API |
 | `core` | Shared pagination, exception, response, and mapper concerns |
 | `gateway` | Standalone raw Netty HTTPS ingress service |
-| `invocation` | Future invocation/orchestration layer |
+| `invocation` | Invocation persistence, immutable dependency snapshots, and ready-event publication |
+| `dispatcher` | Standalone JetStream consumer for ready invocations |
 | `runtime` | Future execution/runtime layer |
 
 ## Responsibility Summary
@@ -182,6 +184,7 @@ funchole/
 | Database | PostgreSQL 17 |
 | Migration | Flyway |
 | Secret management | OpenBao |
+| Global coordination | NATS + JetStream |
 | Authentication | Spring Security + JWT |
 | API docs | Springdoc OpenAPI |
 | Mapping | MapStruct |
@@ -205,6 +208,8 @@ Local service endpoints:
 | Gateway | `https://localhost` |
 | PostgreSQL | `localhost:5432` |
 | OpenBao | `http://localhost:8200` |
+| NATS | `localhost:4222` |
+| NATS monitoring | `http://localhost:8222` |
 | Technitium DNS UI | `http://localhost:5380` |
 
 Useful checks:

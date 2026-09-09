@@ -7,15 +7,17 @@ COPY core/build.gradle /workspace/core/build.gradle
 COPY controlplane/build.gradle /workspace/controlplane/build.gradle
 COPY gateway/build.gradle /workspace/gateway/build.gradle
 COPY invocation/build.gradle /workspace/invocation/build.gradle
+COPY dispatcher/build.gradle /workspace/dispatcher/build.gradle
 COPY runtime/build.gradle /workspace/runtime/build.gradle
 RUN chmod +x gradlew
 RUN --mount=type=cache,target=/root/.gradle \
-    ./gradlew :controlplane:dependencies :gateway:dependencies --no-daemon >/dev/null 2>&1 || true
+    ./gradlew :controlplane:dependencies :gateway:dependencies :dispatcher:dependencies --no-daemon >/dev/null 2>&1 || true
 
 COPY core/src /workspace/core/src
 COPY controlplane/src /workspace/controlplane/src
 COPY gateway/src /workspace/gateway/src
 COPY invocation/src /workspace/invocation/src
+COPY dispatcher/src /workspace/dispatcher/src
 COPY runtime/src /workspace/runtime/src
 COPY docker /workspace/docker
 
@@ -26,6 +28,10 @@ RUN --mount=type=cache,target=/root/.gradle \
 FROM build-base AS build-gateway
 RUN --mount=type=cache,target=/root/.gradle \
     ./gradlew :gateway:fatJar --no-daemon
+
+FROM build-base AS build-dispatcher
+RUN --mount=type=cache,target=/root/.gradle \
+    ./gradlew :dispatcher:fatJar --no-daemon
 
 FROM eclipse-temurin:25-jre AS runtime-base
 WORKDIR /app
@@ -48,6 +54,10 @@ COPY docker/gateway-entrypoint.sh /opt/funchole/entrypoint.sh
 RUN chmod +x /opt/funchole/entrypoint.sh
 EXPOSE 443
 ENTRYPOINT ["/opt/funchole/entrypoint.sh"]
+
+FROM runtime-base AS dispatcher
+COPY --from=build-dispatcher /workspace/dispatcher/build/libs/funchole-dispatcher.jar app.jar
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]
 
 FROM node:22-alpine AS build-web
 WORKDIR /workspace/web
@@ -81,11 +91,13 @@ COPY core/build.gradle /workspace/core/build.gradle
 COPY controlplane/build.gradle /workspace/controlplane/build.gradle
 COPY gateway/build.gradle /workspace/gateway/build.gradle
 COPY invocation/build.gradle /workspace/invocation/build.gradle
+COPY dispatcher/build.gradle /workspace/dispatcher/build.gradle
 COPY runtime/build.gradle /workspace/runtime/build.gradle
 COPY core/src /workspace/core/src
 COPY controlplane/src /workspace/controlplane/src
 COPY gateway/src /workspace/gateway/src
 COPY invocation/src /workspace/invocation/src
+COPY dispatcher/src /workspace/dispatcher/src
 COPY runtime/src /workspace/runtime/src
 COPY docker /workspace/docker
 COPY docker/openbao-common.sh /opt/funchole/openbao-common.sh
@@ -95,7 +107,7 @@ RUN chmod +x /workspace/gradlew \
     /opt/funchole/watch-and-run.sh \
     && mkdir -p /opt/gradle-home \
     && ./gradlew --version \
-    && ./gradlew :controlplane:dependencies :gateway:dependencies --no-daemon >/dev/null 2>&1 || true
+    && ./gradlew :controlplane:dependencies :gateway:dependencies :dispatcher:dependencies --no-daemon >/dev/null 2>&1 || true
 
 FROM dev-base-common AS dev-controlplane
 COPY docker/controlplane-dev-entrypoint.sh /opt/funchole/controlplane-dev-entrypoint.sh
@@ -104,3 +116,7 @@ RUN chmod +x /opt/funchole/controlplane-dev-entrypoint.sh
 FROM dev-base-common AS dev-gateway
 COPY docker/gateway-dev-entrypoint.sh /opt/funchole/gateway-dev-entrypoint.sh
 RUN chmod +x /opt/funchole/gateway-dev-entrypoint.sh
+
+FROM dev-base-common AS dev-dispatcher
+COPY docker/dispatcher-dev-entrypoint.sh /opt/funchole/dispatcher-dev-entrypoint.sh
+RUN chmod +x /opt/funchole/dispatcher-dev-entrypoint.sh

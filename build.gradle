@@ -15,6 +15,7 @@ ext {
     jwtVersion = '0.13.0'
     dnsjavaVersion = '3.6.5'
     bouncyCastleVersion = '1.81'
+    natsVersion = '2.26.0'
 }
 
 allprojects {
