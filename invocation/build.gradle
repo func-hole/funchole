@@ -6,4 +6,11 @@ description = 'Invocation module placeholder for orchestration concerns.'
 
 dependencies {
     implementation project(':core')
+    implementation 'org.postgresql:postgresql'
+
+    testImplementation 'com.fasterxml.jackson.core:jackson-databind'
+    testImplementation "org.testcontainers:testcontainers-junit-jupiter:${testcontainersVersion}"
+    testImplementation "org.testcontainers:testcontainers-postgresql:${testcontainersVersion}"
+
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }

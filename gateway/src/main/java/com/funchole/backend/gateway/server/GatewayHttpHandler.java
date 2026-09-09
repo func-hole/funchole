@@ -6,6 +6,9 @@ import com.funchole.backend.gateway.GatewayRequestContext;
 import com.funchole.backend.gateway.GatewayRuntimeEntry;
 import com.funchole.backend.gateway.flow.FlowResolution;
 import com.funchole.backend.gateway.flow.FlowResolver;
+import com.funchole.backend.invocation.CreateInvocationRequest;
+import com.funchole.backend.invocation.Invocation;
+import com.funchole.backend.invocation.InvocationRegistry;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandler;
@@ -27,11 +30,18 @@ public final class GatewayHttpHandler extends SimpleChannelInboundHandler<FullHt
     private final ObjectMapper objectMapper;
     private final GatewayRegistry gatewayRegistry;
     private final FlowResolver flowResolver;
+    private final InvocationRegistry invocationRegistry;
 
-    public GatewayHttpHandler(ObjectMapper objectMapper, GatewayRegistry gatewayRegistry, FlowResolver flowResolver) {
+    public GatewayHttpHandler(
+            ObjectMapper objectMapper,
+            GatewayRegistry gatewayRegistry,
+            FlowResolver flowResolver,
+            InvocationRegistry invocationRegistry
+    ) {
         this.objectMapper = objectMapper;
         this.gatewayRegistry = gatewayRegistry;
         this.flowResolver = flowResolver;
+        this.invocationRegistry = invocationRegistry;
     }
 
     @Override
@@ -82,21 +92,21 @@ public final class GatewayHttpHandler extends SimpleChannelInboundHandler<FullHt
         }
 
         FlowResolution flow = resolution.get();
-        writeJson(context, HttpResponseStatus.OK, Map.of(
+        Invocation invocation = invocationRegistry.create(new CreateInvocationRequest(
+                flow.flowId(),
+                flow.flowKey(),
+                flow.flowVersionId(),
+                buildInvocationInput(request, requestContext)
+        ));
+
+        writeJson(context, HttpResponseStatus.ACCEPTED, Map.of(
                 "success", true,
-                "message", "Route resolved",
-                "data", Map.ofEntries(
-                        Map.entry("gatewayId", gateway.gatewayId().toString()),
-                        Map.entry("gatewayName", gateway.gatewayName()),
-                        Map.entry("gatewayKey", gateway.gatewayKey()),
-                        Map.entry("domainName", gateway.domainName()),
-                        Map.entry("hostname", gateway.hostname()),
-                        Map.entry("path", requestContext.path()),
-                        Map.entry("method", requestContext.method()),
-                        Map.entry("flowResolved", true),
-                        Map.entry("flowId", flow.flowId().toString()),
-                        Map.entry("flowKey", flow.flowKey()),
-                        Map.entry("flowVersionId", flow.flowVersionId().toString())
+                "message", "Invocation created",
+                "data", Map.of(
+                        "invocationId", invocation.invocationId().toString(),
+                        "flowKey", invocation.flowKey(),
+                        "flowVersionId", invocation.flowVersionId().toString(),
+                        "status", invocation.status().name()
                 )
         ));
     }
@@ -134,6 +144,17 @@ public final class GatewayHttpHandler extends SimpleChannelInboundHandler<FullHt
 
         int colonIndex = normalized.indexOf(':');
         return colonIndex >= 0 ? normalized.substring(0, colonIndex) : normalized;
+    }
+
+    private String buildInvocationInput(FullHttpRequest request, GatewayRequestContext requestContext) throws Exception {
+        String body = request.content().toString(StandardCharsets.UTF_8);
+        return objectMapper.writeValueAsString(Map.of(
+                "method", requestContext.method(),
+                "hostname", requestContext.hostname(),
+                "path", requestContext.path(),
+                "rawUri", requestContext.rawUri(),
+                "body", body
+        ));
     }
 
     private void writeJson(ChannelHandlerContext context, HttpResponseStatus status, Object payload) throws Exception {

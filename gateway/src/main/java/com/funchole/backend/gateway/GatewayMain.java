@@ -5,6 +5,7 @@ import com.funchole.backend.gateway.flow.FlowResolver;
 import com.funchole.backend.gateway.flow.SnapshotFlowResolver;
 import com.funchole.backend.gateway.server.GatewayHttpHandler;
 import com.funchole.backend.gateway.server.GatewayServer;
+import com.funchole.backend.invocation.JdbcInvocationRegistry;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import javax.sql.DataSource;
@@ -31,7 +32,12 @@ public final class GatewayMain {
         GatewayRegistryLoader gatewayRegistryLoader = new GatewayRegistryLoader(dataSource, certificateLoader);
         GatewayRegistry gatewayRegistry = new GatewayRegistry(loadGatewayRegistry(gatewayRegistryLoader));
         FlowResolver flowResolver = new SnapshotFlowResolver(gatewayRegistry);
-        GatewayHttpHandler gatewayHttpHandler = new GatewayHttpHandler(objectMapper, gatewayRegistry, flowResolver);
+        GatewayHttpHandler gatewayHttpHandler = new GatewayHttpHandler(
+                objectMapper,
+                gatewayRegistry,
+                flowResolver,
+                new JdbcInvocationRegistry(dataSource)
+        );
         GatewayServer gatewayServer = new GatewayServer(port, gatewayRegistry, gatewayHttpHandler);
         ScheduledExecutorService registryRefreshExecutor = createRegistryRefreshExecutor();
         startRegistryPolling(gatewayRegistry, gatewayRegistryLoader, registryRefreshExecutor);

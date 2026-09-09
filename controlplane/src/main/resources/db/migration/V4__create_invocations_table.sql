@@ -1,0 +1,10 @@
+CREATE TABLE invocations (
+    id UUID PRIMARY KEY,
+    flow_id UUID NOT NULL,
+    flow_key VARCHAR(150) NOT NULL,
+    flow_version_id UUID NOT NULL,
+    status VARCHAR(100) NOT NULL,
+    input_payload JSONB,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
