@@ -248,6 +248,10 @@ Important current behavior:
 
 Please read [CONTRIBUTING.md](CONTRIBUTING.md) before making architectural or persistence-related changes.
 
+## License
+
+FuncHole is licensed under the [Apache License 2.0](LICENSE).
+
 ## Project Direction
 
 The intended module direction remains:
