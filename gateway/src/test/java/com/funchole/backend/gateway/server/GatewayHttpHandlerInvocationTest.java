@@ -120,6 +120,7 @@ class GatewayHttpHandlerInvocationTest {
                     request.flowVersionId(),
                     InvocationStatus.PENDING,
                     request.inputPayload(),
+                    "{}",
                     OffsetDateTime.now(),
                     OffsetDateTime.now()
             );

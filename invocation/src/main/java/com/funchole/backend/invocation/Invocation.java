@@ -10,6 +10,7 @@ public record Invocation(
         UUID flowVersionId,
         InvocationStatus status,
         String inputPayload,
+        String dependencySnapshot,
         OffsetDateTime createdAt,
         OffsetDateTime updatedAt
 ) {
