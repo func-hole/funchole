@@ -60,6 +60,8 @@ logging:
     org.springframework.security: INFO
 
 app:
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000}
   certificate:
     provider: ${CERTIFICATE_PROVIDER:SELF_SIGNED}
     self-signed-validity-days: ${CERTIFICATE_SELF_SIGNED_VALIDITY_DAYS:30}

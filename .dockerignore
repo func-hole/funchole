@@ -7,3 +7,5 @@ build
 README.md
 *.log
 *.out
+control-plane-web/node_modules
+control-plane-web/.next
