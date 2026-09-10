@@ -7,4 +7,6 @@ out/
 .vscode/
 .DS_Store
 .env
-scripts/dev/
+scripts/dev/*
+!scripts/dev/
+!scripts/dev/seed-flow-routes.sh

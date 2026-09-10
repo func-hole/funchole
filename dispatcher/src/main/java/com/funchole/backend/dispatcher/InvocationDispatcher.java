@@ -29,12 +29,14 @@ public final class InvocationDispatcher {
     private final Connection connection;
     private final InvocationRegistry invocationRegistry;
     private final ObjectMapper objectMapper;
+    private final InvocationSnapshotValidator snapshotValidator;
     private final JetStreamSubscription subscription;
 
     public InvocationDispatcher(Connection connection, InvocationRegistry invocationRegistry) {
         this.connection = connection;
         this.invocationRegistry = invocationRegistry;
         this.objectMapper = new ObjectMapper();
+        this.snapshotValidator = new InvocationSnapshotValidator();
         ensureStream();
         this.subscription = subscribe();
     }
@@ -73,14 +75,43 @@ public final class InvocationDispatcher {
         }
 
         InvocationSnapshot snapshot = objectMapper.readValue(invocation.dependencySnapshot(), InvocationSnapshot.class);
-        int rootStepCount = snapshot.flows().isEmpty() ? 0 : snapshot.flows().getFirst().steps().size();
+        InvocationValidationResult validationResult = snapshotValidator.validate(snapshot);
+        if (!validationResult.valid()) {
+            throw new IllegalStateException("Invocation snapshot is not executable-shaped: " + validationResult.errors());
+        }
+        int rootStepCount = snapshot.flows().getFirst().steps().size();
         logger.info(
-                "Invocation ready for dispatch: invocationId={}, flowKey={}, flowVersionId={}, rootStepCount={}",
+                "Invocation ready for dispatch: invocationId={}, flowKey={}, flowVersionId={}, rootStepCount={}, steps={}",
                 invocation.invocationId(),
                 invocation.flowKey(),
                 invocation.flowVersionId(),
-                rootStepCount
+                rootStepCount,
+                describeSteps(snapshot)
         );
+    }
+
+    private String describeSteps(InvocationSnapshot snapshot) {
+        if (snapshot.flows().isEmpty()) {
+            return "[]";
+        }
+
+        return snapshot.flows().getFirst().steps().stream()
+                .map(step -> step.position() + ":" + displayName(step.metadata(), step.stepKey()) + ":" + step.stepId())
+                .toList()
+                .toString();
+    }
+
+    private String displayName(String metadata, String fallback) {
+        if (metadata == null || metadata.isBlank()) {
+            return fallback;
+        }
+
+        try {
+            String name = objectMapper.readTree(metadata).path("name").asText();
+            return name.isBlank() ? fallback : name;
+        } catch (IOException exception) {
+            return fallback;
+        }
     }
 
     private JetStreamSubscription subscribe() {

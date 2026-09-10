@@ -147,6 +147,22 @@ class InvocationDispatcherTest {
                 UUID.fromString("30000000-0000-0000-0000-000000000101"),
                 UUID.fromString("40000000-0000-0000-0000-000000000101")
         );
+        insertStep(
+                flowVersionId,
+                "fetch-orders",
+                "FUNCTION",
+                2,
+                UUID.fromString("30000000-0000-0000-0000-000000000102"),
+                UUID.fromString("40000000-0000-0000-0000-000000000102")
+        );
+        insertStep(
+                flowVersionId,
+                "build-orders-response",
+                "FUNCTION",
+                3,
+                UUID.fromString("30000000-0000-0000-0000-000000000103"),
+                UUID.fromString("40000000-0000-0000-0000-000000000103")
+        );
         Invocation invocation = invocationRegistry.create(new CreateInvocationRequest(
                 flowId,
                 "flw_dispatch",
@@ -158,6 +174,23 @@ class InvocationDispatcherTest {
         assertTrue(dispatcher.processNext(Duration.ofSeconds(5)));
         assertEquals(invocation.invocationId(), invocationRegistry.findById(invocation.invocationId()).orElseThrow().invocationId());
         assertFalse(dispatcher.processNext(Duration.ofMillis(500)));
+    }
+
+    @Test
+    void doesNotTreatInvalidSnapshotAsSuccessfulDispatchPreparation() throws Exception {
+        UUID flowId = UUID.fromString("10000000-0000-0000-0000-000000000111");
+        UUID flowVersionId = UUID.fromString("20000000-0000-0000-0000-000000000111");
+        insertFlow(flowId, "flw_without_steps", flowVersionId, 1);
+        Invocation invocation = invocationRegistry.create(new CreateInvocationRequest(
+                flowId,
+                "flw_without_steps",
+                flowVersionId,
+                "{\"path\":\"/invalid\"}"
+        ));
+        InvocationDispatcher dispatcher = new InvocationDispatcher(natsConnection, invocationRegistry);
+
+        assertFalse(dispatcher.processNext(Duration.ofSeconds(5)));
+        assertEquals(invocation.invocationId(), invocationRegistry.findById(invocation.invocationId()).orElseThrow().invocationId());
     }
 
     @Test

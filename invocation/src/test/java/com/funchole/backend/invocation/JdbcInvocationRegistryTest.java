@@ -26,6 +26,17 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 class JdbcInvocationRegistryTest {
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final UUID ORDERS_FLOW_ID = UUID.fromString("55555555-5555-5555-5555-555555555551");
+    private static final UUID ORDERS_FLOW_VERSION_ID = UUID.fromString("66666666-6666-6666-6666-666666666661");
+    private static final UUID VALIDATE_ORDERS_STEP_ID = UUID.fromString("77777777-7777-7777-7777-777777777761");
+    private static final UUID FETCH_ORDERS_STEP_ID = UUID.fromString("77777777-7777-7777-7777-777777777762");
+    private static final UUID BUILD_ORDERS_RESPONSE_STEP_ID = UUID.fromString("77777777-7777-7777-7777-777777777763");
+    private static final UUID VALIDATE_ORDERS_COMPONENT_ID = UUID.fromString("88888888-8888-8888-8888-888888888861");
+    private static final UUID FETCH_ORDERS_COMPONENT_ID = UUID.fromString("88888888-8888-8888-8888-888888888862");
+    private static final UUID BUILD_ORDERS_RESPONSE_COMPONENT_ID = UUID.fromString("88888888-8888-8888-8888-888888888863");
+    private static final UUID VALIDATE_ORDERS_COMPONENT_VERSION_ID = UUID.fromString("99999999-9999-9999-9999-999999999861");
+    private static final UUID FETCH_ORDERS_COMPONENT_VERSION_ID = UUID.fromString("99999999-9999-9999-9999-999999999862");
+    private static final UUID BUILD_ORDERS_RESPONSE_COMPONENT_VERSION_ID = UUID.fromString("99999999-9999-9999-9999-999999999863");
 
     @Container
     private static final PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:17")
@@ -225,6 +236,67 @@ class JdbcInvocationRegistryTest {
     }
 
     @Test
+    void ordersFlowVersionResolvesFakeExecutableStepsInOrder() throws Exception {
+        insertOrdersFlowWithFakeSteps();
+
+        Invocation invocation = registry.create(new CreateInvocationRequest(
+                ORDERS_FLOW_ID,
+                "flw_orders_list",
+                ORDERS_FLOW_VERSION_ID,
+                "{\"method\":\"GET\",\"path\":\"/orders\"}"
+        ));
+        JsonNode steps = OBJECT_MAPPER.readTree(invocation.dependencySnapshot()).at("/flows/0/steps");
+
+        assertEquals(3, steps.size());
+        assertEquals(VALIDATE_ORDERS_STEP_ID.toString(), steps.get(0).at("/stepId").asText());
+        assertEquals("FUNCTION", steps.get(0).at("/componentType").asText());
+        assertEquals(1, steps.get(0).at("/position").asInt());
+        assertEquals("Validate Orders Request", OBJECT_MAPPER.readTree(steps.get(0).at("/metadata").asText()).at("/name").asText());
+        assertEquals(VALIDATE_ORDERS_COMPONENT_ID.toString(), steps.get(0).at("/componentId").asText());
+        assertEquals(VALIDATE_ORDERS_COMPONENT_VERSION_ID.toString(), steps.get(0).at("/componentVersionId").asText());
+
+        assertEquals(FETCH_ORDERS_STEP_ID.toString(), steps.get(1).at("/stepId").asText());
+        assertEquals("FUNCTION", steps.get(1).at("/componentType").asText());
+        assertEquals(2, steps.get(1).at("/position").asInt());
+        assertEquals("Fetch Orders", OBJECT_MAPPER.readTree(steps.get(1).at("/metadata").asText()).at("/name").asText());
+        assertEquals(FETCH_ORDERS_COMPONENT_ID.toString(), steps.get(1).at("/componentId").asText());
+        assertEquals(FETCH_ORDERS_COMPONENT_VERSION_ID.toString(), steps.get(1).at("/componentVersionId").asText());
+
+        assertEquals(BUILD_ORDERS_RESPONSE_STEP_ID.toString(), steps.get(2).at("/stepId").asText());
+        assertEquals("FUNCTION", steps.get(2).at("/componentType").asText());
+        assertEquals(3, steps.get(2).at("/position").asInt());
+        assertEquals("Build Orders Response", OBJECT_MAPPER.readTree(steps.get(2).at("/metadata").asText()).at("/name").asText());
+        assertEquals(BUILD_ORDERS_RESPONSE_COMPONENT_ID.toString(), steps.get(2).at("/componentId").asText());
+        assertEquals(BUILD_ORDERS_RESPONSE_COMPONENT_VERSION_ID.toString(), steps.get(2).at("/componentVersionId").asText());
+    }
+
+    @Test
+    void ordersInvocationSnapshotRemainsImmutableAfterSourceStepsChange() throws Exception {
+        insertOrdersFlowWithFakeSteps();
+
+        Invocation invocation = registry.create(new CreateInvocationRequest(
+                ORDERS_FLOW_ID,
+                "flw_orders_list",
+                ORDERS_FLOW_VERSION_ID,
+                "{\"method\":\"GET\",\"path\":\"/orders\"}"
+        ));
+        insertStep(
+                ORDERS_FLOW_VERSION_ID,
+                "new-source-step-after-invocation",
+                "FUNCTION",
+                4,
+                UUID.fromString("88888888-8888-8888-8888-888888888864"),
+                UUID.fromString("99999999-9999-9999-9999-999999999864")
+        );
+
+        Invocation retrieved = registry.findById(invocation.invocationId()).orElseThrow();
+        JsonNode steps = OBJECT_MAPPER.readTree(retrieved.dependencySnapshot()).at("/flows/0/steps");
+
+        assertEquals(3, steps.size());
+        assertFalse(retrieved.dependencySnapshot().contains("new-source-step-after-invocation"));
+    }
+
+    @Test
     void existingSnapshotKeepsOriginalVersionsAfterNewerVersionsAreAdded() throws Exception {
         UUID flowId = UUID.fromString("10000000-0000-0000-0000-000000000011");
         UUID flowVersionId = UUID.fromString("20000000-0000-0000-0000-000000000011");
@@ -403,6 +475,81 @@ class JdbcInvocationRegistryTest {
         } catch (Exception exception) {
             throw new IllegalStateException("Failed to insert flow step test data", exception);
         }
+    }
+
+    private void insertStep(
+            UUID stepId,
+            UUID flowVersionId,
+            String stepKey,
+            String componentType,
+            int position,
+            UUID componentId,
+            UUID componentVersionId,
+            String metadata
+    ) {
+        try (
+                Connection connection = dataSource().getConnection();
+                Statement statement = connection.createStatement()
+        ) {
+            statement.execute("""
+                    insert into flow_steps (
+                        id,
+                        flow_version_id,
+                        step_key,
+                        component_type,
+                        position,
+                        component_id,
+                        component_version_id,
+                        metadata
+                    )
+                    values (
+                        '%s',
+                        '%s',
+                        '%s',
+                        '%s',
+                        %s,
+                        '%s',
+                        '%s',
+                        '%s'::jsonb
+                    )
+                    """.formatted(stepId, flowVersionId, stepKey, componentType, position, componentId, componentVersionId, metadata));
+        } catch (Exception exception) {
+            throw new IllegalStateException("Failed to insert flow step test data", exception);
+        }
+    }
+
+    private void insertOrdersFlowWithFakeSteps() {
+        insertFlow(ORDERS_FLOW_ID, "flw_orders_list", ORDERS_FLOW_VERSION_ID, 1);
+        insertStep(
+                VALIDATE_ORDERS_STEP_ID,
+                ORDERS_FLOW_VERSION_ID,
+                "validate-orders-request",
+                "FUNCTION",
+                1,
+                VALIDATE_ORDERS_COMPONENT_ID,
+                VALIDATE_ORDERS_COMPONENT_VERSION_ID,
+                "{\"name\":\"Validate Orders Request\"}"
+        );
+        insertStep(
+                FETCH_ORDERS_STEP_ID,
+                ORDERS_FLOW_VERSION_ID,
+                "fetch-orders",
+                "FUNCTION",
+                2,
+                FETCH_ORDERS_COMPONENT_ID,
+                FETCH_ORDERS_COMPONENT_VERSION_ID,
+                "{\"name\":\"Fetch Orders\"}"
+        );
+        insertStep(
+                BUILD_ORDERS_RESPONSE_STEP_ID,
+                ORDERS_FLOW_VERSION_ID,
+                "build-orders-response",
+                "FUNCTION",
+                3,
+                BUILD_ORDERS_RESPONSE_COMPONENT_ID,
+                BUILD_ORDERS_RESPONSE_COMPONENT_VERSION_ID,
+                "{\"name\":\"Build Orders Response\"}"
+        );
     }
 
     private int countInvocations() throws Exception {
