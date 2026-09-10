@@ -22,7 +22,8 @@ public final class DispatcherMain {
         Connection natsConnection = Nats.connect(readString("NATS_URL", "nats://localhost:4222"));
         InvocationDispatcher dispatcher = new InvocationDispatcher(
                 natsConnection,
-                new JdbcInvocationRegistry(dataSource)
+                new JdbcInvocationRegistry(dataSource),
+                new JdbcInvocationStepExecutionRegistry(dataSource)
         );
         Duration pollTimeout = Duration.ofMillis(readInt("DISPATCHER_POLL_TIMEOUT_MS", 1000));
 

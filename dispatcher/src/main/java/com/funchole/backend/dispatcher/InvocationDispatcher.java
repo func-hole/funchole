@@ -28,22 +28,29 @@ public final class InvocationDispatcher {
 
     private final Connection connection;
     private final InvocationRegistry invocationRegistry;
+    private final InvocationStepExecutionRegistry stepExecutionRegistry;
     private final ObjectMapper objectMapper;
     private final InvocationSnapshotValidator snapshotValidator;
     private final ExecutionPlanner executionPlanner;
     private final JetStreamSubscription subscription;
 
-    public InvocationDispatcher(Connection connection, InvocationRegistry invocationRegistry) {
-        this(connection, invocationRegistry, new ExecutionPlanner());
+    public InvocationDispatcher(
+            Connection connection,
+            InvocationRegistry invocationRegistry,
+            InvocationStepExecutionRegistry stepExecutionRegistry
+    ) {
+        this(connection, invocationRegistry, stepExecutionRegistry, new ExecutionPlanner());
     }
 
     InvocationDispatcher(
             Connection connection,
             InvocationRegistry invocationRegistry,
+            InvocationStepExecutionRegistry stepExecutionRegistry,
             ExecutionPlanner executionPlanner
     ) {
         this.connection = connection;
         this.invocationRegistry = invocationRegistry;
+        this.stepExecutionRegistry = stepExecutionRegistry;
         this.objectMapper = new ObjectMapper();
         this.snapshotValidator = new InvocationSnapshotValidator();
         this.executionPlanner = executionPlanner;
@@ -101,6 +108,22 @@ public final class InvocationDispatcher {
                 dispatchableStep.componentType(),
                 dispatchableStep.componentId(),
                 dispatchableStep.componentVersionId()
+        );
+
+        InvocationStepExecution stepExecution = stepExecutionRegistry.createOrGetReadyExecution(dispatchableStep);
+        if (stepExecution.status() != InvocationStepExecutionStatus.READY) {
+            throw new IllegalStateException("Step execution is not READY: " + stepExecution.id());
+        }
+        logger.info(
+                "Step execution ready: executionId={}, invocationId={}, stepId={}, position={}, componentId={}, componentVersionId={}, attempt={}, status={}",
+                stepExecution.id(),
+                stepExecution.invocationId(),
+                stepExecution.stepId(),
+                stepExecution.position(),
+                stepExecution.componentId(),
+                stepExecution.componentVersionId(),
+                stepExecution.attempt(),
+                stepExecution.status()
         );
     }
 
