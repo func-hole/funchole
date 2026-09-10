@@ -265,7 +265,7 @@ class InvocationDispatcherTest {
         insertStep(
                 flowVersionId,
                 "build-orders-response",
-                "FUNCTION",
+                "RESPONSE",
                 3,
                 UUID.fromString("30000000-0000-0000-0000-000000000123"),
                 UUID.fromString("40000000-0000-0000-0000-000000000123")
@@ -307,8 +307,13 @@ class InvocationDispatcherTest {
         assertEquals(firstComponentId, execution.componentId());
         assertEquals(firstComponentVersionId, execution.componentVersionId());
         assertEquals("NODE", execution.runtimeType());
-        assertEquals(1, countStepExecutions());
 
+        // Sequential progression: FUNCTION step 2 was dispatched and completed
+        // with the first step's result as its input; the RESPONSE step at
+        // position 3 stops progression.
+        awaitCondition(() -> runtimeRegistry.find(DEV_RUNTIME_INSTANCE_ID).orElseThrow().inFlight() == 0, Duration.ofSeconds(5));
+        awaitCondition(() -> countStepExecutionsUnchecked() == 2, Duration.ofSeconds(5));
+        assertEquals(2, countStepExecutions());
         assertEquals(0, runtimeRegistry.find(DEV_RUNTIME_INSTANCE_ID).orElseThrow().inFlight());
     }
 
@@ -435,6 +440,122 @@ class InvocationDispatcherTest {
                 Duration.ofSeconds(5)
         );
         assertFalse(dispatcher.processNext(Duration.ofMillis(500)));
+    }
+
+    @Test
+    void progressesToNextFunctionWithPreviousResultAsInput() throws Exception {
+        UUID flowId = UUID.fromString("10000000-0000-0000-0000-000000000231");
+        UUID flowVersionId = UUID.fromString("20000000-0000-0000-0000-000000000231");
+        UUID secondComponentId = UUID.fromString("30000000-0000-0000-0000-000000000232");
+        UUID secondComponentVersionId = UUID.fromString("40000000-0000-0000-0000-000000000232");
+        insertFlow(flowId, "flw_orders_list", flowVersionId, 1);
+        insertStep(flowVersionId, "validate-orders-request", "FUNCTION", 1,
+                UUID.fromString("30000000-0000-0000-0000-000000000231"),
+                UUID.fromString("40000000-0000-0000-0000-000000000231"));
+        insertStep(flowVersionId, "fetch-orders", "FUNCTION", 2, secondComponentId, secondComponentVersionId);
+        insertStep(flowVersionId, "build-orders-response", "RESPONSE", 3,
+                UUID.fromString("30000000-0000-0000-0000-000000000233"),
+                UUID.fromString("40000000-0000-0000-0000-000000000233"));
+        invocationRegistry.create(new CreateInvocationRequest(flowId, "flw_orders_list", flowVersionId, "{\"path\":\"/orders\"}"));
+        InMemoryRuntimeRegistry singleCapacityRegistry = new InMemoryRuntimeRegistry();
+        singleCapacityRegistry.register(new RuntimeInstance(
+                "runtime-node-single", "NODE", RuntimeInstanceStatus.AVAILABLE, 1, 0, "/tmp/test-single-p1.sock"));
+        CapturingRuntimeExecutionGateway gateway = new CapturingRuntimeExecutionGateway();
+        InvocationDispatcher dispatcher = new InvocationDispatcher(
+                natsConnection, invocationRegistry, stepExecutionRegistry, singleCapacityRegistry,
+                new ExecutionPlanner(), gateway
+        );
+
+        assertTrue(dispatcher.processNext(Duration.ofSeconds(5)));
+
+        awaitCondition(() -> countStepExecutionsUnchecked() == 2, Duration.ofSeconds(5));
+        awaitCondition(() -> singleCapacityRegistry.find("runtime-node-single").orElseThrow().inFlight() == 0,
+                Duration.ofSeconds(5));
+
+        var requests = gateway.requests();
+        assertEquals(2, requests.size());
+        RuntimeExecutionRequest secondRequest = requests.get(1);
+        assertEquals(secondComponentVersionId, secondRequest.componentVersionId());
+        assertEquals(secondComponentId, secondRequest.componentId());
+        assertEquals(1, secondRequest.attempt());
+
+        InvocationStepExecution firstExecution =
+                stepExecutionRegistry.findById(requests.get(0).executionId()).orElseThrow();
+        assertEquals(firstExecution.result(), secondRequest.input());
+
+        InvocationStepExecution secondExecution = stepExecutionRegistry.findById(secondRequest.executionId()).orElseThrow();
+        assertEquals(InvocationStepExecutionStatus.COMPLETED, secondExecution.status());
+        assertEquals(1, secondExecution.attempt());
+        assertEquals(InvocationStepExecutionStatus.COMPLETED, firstExecution.status());
+        assertEquals(0, singleCapacityRegistry.find("runtime-node-single").orElseThrow().inFlight());
+    }
+
+    @Test
+    void doesNotProgressWhenFirstFunctionFails() throws Exception {
+        UUID flowId = UUID.fromString("10000000-0000-0000-0000-000000000251");
+        UUID flowVersionId = UUID.fromString("20000000-0000-0000-0000-000000000251");
+        insertFlow(flowId, "flw_orders_list", flowVersionId, 1);
+        insertStep(flowVersionId, "validate-orders-request", "FUNCTION", 1,
+                UUID.fromString("30000000-0000-0000-0000-000000000251"),
+                UUID.fromString("40000000-0000-0000-0000-000000000251"));
+        insertStep(flowVersionId, "fetch-orders", "FUNCTION", 2,
+                UUID.fromString("30000000-0000-0000-0000-000000000252"),
+                UUID.fromString("40000000-0000-0000-0000-000000000252"));
+        Invocation invocation = invocationRegistry.create(new CreateInvocationRequest(
+                flowId, "flw_orders_list", flowVersionId, "{\"path\":\"/orders\"}"
+        ));
+        InMemoryRuntimeRegistry singleCapacityRegistry = new InMemoryRuntimeRegistry();
+        singleCapacityRegistry.register(new RuntimeInstance(
+                "runtime-node-single", "NODE", RuntimeInstanceStatus.AVAILABLE, 1, 0, "/tmp/test-single-p2.sock"));
+        InvocationDispatcher dispatcher = new InvocationDispatcher(
+                natsConnection, invocationRegistry, stepExecutionRegistry, singleCapacityRegistry,
+                new ExecutionPlanner(), new EagerCompletingGateway().failWith("FAKE_RUNTIME_ERROR")
+        );
+
+        assertTrue(dispatcher.processNext(Duration.ofSeconds(5)));
+
+        awaitCondition(() -> singleCapacityRegistry.find("runtime-node-single").orElseThrow().inFlight() == 0,
+                Duration.ofSeconds(5));
+        assertEquals(1, countStepExecutions());
+        InvocationStepExecution failed = firstStepExecution().orElseThrow();
+        assertEquals(InvocationStepExecutionStatus.FAILED, failed.status());
+        assertEquals(invocation.invocationId(), failed.invocationId());
+    }
+
+    @Test
+    void duplicateStepOneCompletionDoesNotCreateMoreExecutions() throws Exception {
+        UUID flowId = UUID.fromString("10000000-0000-0000-0000-000000000261");
+        UUID flowVersionId = UUID.fromString("20000000-0000-0000-0000-000000000261");
+        insertFlow(flowId, "flw_orders_list", flowVersionId, 1);
+        insertStep(flowVersionId, "validate-orders-request", "FUNCTION", 1,
+                UUID.fromString("30000000-0000-0000-0000-000000000261"),
+                UUID.fromString("40000000-0000-0000-0000-000000000261"));
+        insertStep(flowVersionId, "fetch-orders", "FUNCTION", 2,
+                UUID.fromString("30000000-0000-0000-0000-000000000262"),
+                UUID.fromString("40000000-0000-0000-0000-000000000262"));
+        insertStep(flowVersionId, "build-orders-response", "RESPONSE", 3,
+                UUID.fromString("30000000-0000-0000-0000-000000000263"),
+                UUID.fromString("40000000-0000-0000-0000-000000000263"));
+        invocationRegistry.create(new CreateInvocationRequest(flowId, "flw_orders_list", flowVersionId, "{\"path\":\"/orders\"}"));
+        CapturingRuntimeExecutionGateway gateway = new CapturingRuntimeExecutionGateway();
+        InvocationDispatcher dispatcher = new InvocationDispatcher(
+                natsConnection, invocationRegistry, stepExecutionRegistry, runtimeRegistry,
+                new ExecutionPlanner(), gateway
+        );
+
+        assertTrue(dispatcher.processNext(Duration.ofSeconds(5)));
+        awaitCondition(() -> countStepExecutionsUnchecked() == 2, Duration.ofSeconds(5));
+
+        InvocationStepExecution firstExecution =
+                stepExecutionRegistry.findById(gateway.requests().get(0).executionId()).orElseThrow();
+        InvocationStepExecutionTransition duplicate =
+                stepExecutionRegistry.markCompleted(
+                        firstExecution.id(),
+                        RuntimeExecutionResult.success(firstExecution.id(), firstExecution.result())
+                );
+
+        assertFalse(duplicate.transitioned());
+        assertEquals(2, countStepExecutions());
     }
 
     @Test
@@ -757,6 +878,28 @@ class InvocationDispatcherTest {
         throw new AssertionError("Condition not met within " + timeout);
     }
 
+    private java.util.Optional<InvocationStepExecution> firstStepExecution() throws Exception {
+        try (
+                var connection = dataSource().getConnection();
+                Statement statement = connection.createStatement();
+                var resultSet = statement.executeQuery(
+                        "select id from invocation_step_executions order by created_at limit 1")
+        ) {
+            if (resultSet.next()) {
+                return stepExecutionRegistry.findById(java.util.UUID.fromString(resultSet.getString(1)));
+            }
+            return java.util.Optional.empty();
+        }
+    }
+
+    private int countStepExecutionsUnchecked() {
+        try {
+            return countStepExecutions();
+        } catch (Exception exception) {
+            throw new RuntimeException(exception);
+        }
+    }
+
     private int countStepExecutions() throws Exception {
         try (
                 var connection = dataSource().getConnection();
@@ -897,6 +1040,7 @@ class InvocationDispatcherTest {
     private static final class CapturingRuntimeExecutionGateway implements RuntimeExecutionGateway {
 
         private final InMemoryRuntimeExecutionGateway delegate = new InMemoryRuntimeExecutionGateway();
+        private final java.util.List<RuntimeExecutionRequest> requests = new java.util.concurrent.CopyOnWriteArrayList<>();
         private RuntimeTarget capturedTarget;
         private RuntimeExecutionRequest capturedRequest;
 
@@ -904,6 +1048,7 @@ class InvocationDispatcherTest {
         public RuntimeExecutionHandle handoff(RuntimeTarget target, RuntimeExecutionRequest request) {
             capturedTarget = target;
             capturedRequest = request;
+            requests.add(request);
             return delegate.handoff(target, request);
         }
 
@@ -913,6 +1058,44 @@ class InvocationDispatcherTest {
 
         RuntimeExecutionRequest capturedRequest() {
             return capturedRequest;
+        }
+
+        java.util.List<RuntimeExecutionRequest> requests() {
+            return requests;
+        }
+    }
+
+    /**
+     * Fake gateway that accepts every handoff and completes the execution
+     * immediately with the configured terminal result, letting tests drive
+     * deterministic RESULT / ERROR lifecycles without IPC.
+     */
+    private static final class EagerCompletingGateway implements RuntimeExecutionGateway {
+
+        private volatile String errorCode;
+        private final java.util.List<RuntimeExecutionRequest> requests = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+        EagerCompletingGateway failWith(String errorCode) {
+            this.errorCode = errorCode;
+            return this;
+        }
+
+        @Override
+        public RuntimeExecutionHandle handoff(RuntimeTarget target, RuntimeExecutionRequest request) {
+            requests.add(request);
+            RuntimeExecutionResult terminal = errorCode == null
+                    ? RuntimeExecutionResult.success(request.executionId(),
+                            "{\"ok\":true,\"executionId\":\"" + request.executionId() + "\"}")
+                    : RuntimeExecutionResult.failure(request.executionId(),
+                            new RuntimeExecutionError(errorCode, "Simulated runtime failure"));
+            return new RuntimeExecutionHandle(
+                    RuntimeExecutionAcceptance.accept(request.executionId()),
+                    java.util.concurrent.CompletableFuture.completedFuture(terminal)
+            );
+        }
+
+        java.util.List<RuntimeExecutionRequest> requests() {
+            return requests;
         }
     }
 

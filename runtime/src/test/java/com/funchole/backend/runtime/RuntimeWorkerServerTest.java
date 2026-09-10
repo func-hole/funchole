@@ -261,8 +261,37 @@ class RuntimeWorkerServerTest {
     }
 
     @Test
-    void singleConnectionAcceptsMultipleSequentialInvokes() throws Exception {
-        // A slightly delayed artifact keeps ACCEPTED deterministically ahead of
+    void terminalResultIsDeliveredToNewConnectionAfterOriginalDisconnects() throws Exception {
+        UUID componentId = UUID.randomUUID();
+        UUID componentVersionId = writeSlowCountingArtifact();
+        UUID executionId = UUID.randomUUID();
+
+        try (TestClient first = TestClient.connect(socketPath)) {
+            first.sendInvoke(executionId, "NODE", componentId, componentVersionId, "{}");
+            RuntimeAcceptedMessage firstAccepted =
+                    OBJECT_MAPPER.readValue(first.readLine(), RuntimeAcceptedMessage.class);
+            assertEquals(executionId, firstAccepted.executionId());
+            // Disconnect after ACCEPTED; the artifact is still executing.
+        }
+
+        try (TestClient second = TestClient.connect(socketPath)) {
+            second.sendInvoke(executionId, "NODE", componentId, componentVersionId, "{}");
+            RuntimeAcceptedMessage secondAccepted =
+                    OBJECT_MAPPER.readValue(second.readLine(), RuntimeAcceptedMessage.class);
+            assertEquals(executionId, secondAccepted.executionId());
+
+            RuntimeTerminalMessage result = OBJECT_MAPPER.readValue(
+                    assertTimeoutPreemptively(Duration.ofSeconds(5), second::readLine), RuntimeTerminalMessage.class);
+            assertEquals("RESULT", result.type());
+            assertEquals(executionId, result.executionId());
+            assertEquals("{\"invocationCount\":1}", result.output());
+        }
+
+        assertEquals(1, server.acceptedCount());
+    }
+
+    @Test
+    void singleConnectionAcceptsMultipleSequentialInvokes() throws Exception {        // A slightly delayed artifact keeps ACCEPTED deterministically ahead of
         // RESULT on the wire, since with real (fast, synchronous) artifact
         // resolution an immediate artifact could otherwise write its RESULT
         // before this test reads the second invoke's ACCEPTED line.

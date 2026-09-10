@@ -11,6 +11,7 @@ import com.funchole.backend.invocation.InvocationStatus;
 import com.funchole.backend.invocation.InvocationStepSnapshot;
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
@@ -181,5 +182,72 @@ class ExecutionPlannerTest {
                 UUID.fromString(componentVersionId),
                 null
         );
+    }
+
+    @Test
+    void plansNextOrderedStepFromSnapshotSkippingPositions() {
+        InvocationStepSnapshot first = step("validate-orders-request", "FUNCTION", 1,
+                "88888888-8888-8888-8888-888888888861", "99999999-9999-9999-9999-999999999861");
+        InvocationStepSnapshot third = step("fetch-orders", "FUNCTION", 3,
+                "88888888-8888-8888-8888-888888888862", "99999999-9999-9999-9999-999999999862");
+        InvocationStepSnapshot fifth = step("third-step", "FUNCTION", 5,
+                "88888888-8888-8888-8888-888888888863", "99999999-9999-9999-9999-999999999863");
+
+        Optional<DispatchableStep> next =
+                planner.planNextStep(invocation(), snapshot(List.of(first, third, fifth)), 1);
+
+        assertTrue(next.isPresent());
+        assertEquals(3, next.get().position());
+        assertEquals(third.stepId(), next.get().stepId());
+        assertEquals("fetch-orders", next.get().stepKey());
+        assertEquals(FLOW_VERSION_ID, next.get().flowVersionId());
+        assertEquals(FLOW_ID, next.get().flowId());
+        assertEquals(INVOCATION_ID, next.get().invocationId());
+        assertEquals("NODE", next.get().runtimeType());
+    }
+
+    @Test
+    void subsequentPlanningUsesPositionNotListOrderAndStopsWithoutFurtherSteps() {
+        InvocationStepSnapshot positionThree = step("a", "FUNCTION", 3,
+                "88888888-8888-8888-8888-888888888861", "99999999-9999-9999-9999-999999999861");
+        InvocationStepSnapshot positionFive = step("b", "FUNCTION", 5,
+                "88888888-8888-8888-8888-888888888862", "99999999-9999-9999-9999-999999999862");
+
+        assertTrue(planner.planNextStep(invocation(), snapshot(List.of(positionFive, positionThree)), 1)
+                .map(DispatchableStep::position)
+                .orElseThrow() == 3);
+        assertTrue(planner
+                .planNextStep(invocation(), snapshot(List.of(positionThree, positionFive)), 3)
+                .map(DispatchableStep::position)
+                .orElseThrow() == 5);
+        assertTrue(planner.planNextStep(invocation(), snapshot(List.of(positionThree, positionFive)), 5).isEmpty());
+    }
+
+    @Test
+    void stopsWhenNextOrderedStepIsNotAFunctionComponent() {
+        InvocationStepSnapshot first = step("validate-orders-request", "FUNCTION", 1,
+                "88888888-8888-8888-8888-888888888861", "99999999-9999-9999-9999-999999999861");
+        InvocationStepSnapshot response = step("build-orders-response", "RESPONSE", 2,
+                "88888888-8888-8888-8888-888888888863", "99999999-9999-9999-9999-999999999863");
+
+        assertTrue(planner.planNextStep(invocation(), snapshot(List.of(first, response)), 1).isEmpty());
+    }
+
+    @Test
+    void nextStepCarriesExactPinnedComponentAndVersionFromSnapshot() {
+        InvocationStepSnapshot first = step("validate-orders-request", "FUNCTION", 1,
+                "88888888-8888-8888-8888-888888888861", "99999999-9999-9999-9999-999999999861");
+        UUID secondComponentId = UUID.fromString("88888888-8888-8888-8888-888888888862");
+        UUID secondComponentVersionId = UUID.fromString("99999999-9999-9999-9999-999999999862");
+        InvocationStepSnapshot second = new InvocationStepSnapshot(
+                UUID.randomUUID(), "fetch-orders", "FUNCTION", 2, secondComponentId, secondComponentVersionId, null);
+
+        Optional<DispatchableStep> next =
+                planner.planNextStep(invocation(), snapshot(List.of(first, second)), 1);
+
+        assertTrue(next.isPresent());
+        assertEquals(secondComponentId, next.get().componentId());
+        assertEquals(secondComponentVersionId, next.get().componentVersionId());
+        assertEquals(FLOW_VERSION_ID, next.get().flowVersionId());
     }
 }

@@ -1,5 +1,6 @@
 package com.funchole.backend.dispatcher;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.funchole.backend.invocation.Invocation;
 import com.funchole.backend.invocation.InvocationMessagingConfig;
@@ -23,6 +24,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -32,6 +34,7 @@ import org.slf4j.LoggerFactory;
 
 public final class InvocationDispatcher {
     private static final Logger logger = LoggerFactory.getLogger(InvocationDispatcher.class);
+    private static final int FIRST_STEP_POSITION = 1;
 
     private final Connection connection;
     private final InvocationRegistry invocationRegistry;
@@ -167,6 +170,19 @@ public final class InvocationDispatcher {
                 stepExecution.status()
         );
 
+        dispatchStepExecution(invocation, stepExecution, null);
+    }
+
+    /**
+     * The single dispatch path shared by the initial planned step and every
+     * sequentially progressed step: reserve runtime capacity, build the
+     * execution request, hand off to the runtime worker, persist RUNNING on
+     * acceptance, and register terminal-completion handling.
+     *
+     * {@code stepInput} is the request input override; {@code null} means the
+     * step is the first step and receives the root Invocation input payload.
+     */
+    private void dispatchStepExecution(Invocation invocation, InvocationStepExecution stepExecution, String stepInput) {
         RuntimeRequirement runtimeRequirement = new RuntimeRequirement(stepExecution.runtimeType());
         RuntimeTarget runtimeTarget = runtimeRegistry.selectAndReserve(runtimeRequirement);
         logger.info(
@@ -178,8 +194,9 @@ public final class InvocationDispatcher {
                 runtimeTarget.runtimeType()
         );
         try {
-            RuntimeExecutionRequest executionRequest =
-                    RuntimeExecutionRequest.fromStepExecution(stepExecution, invocation);
+            RuntimeExecutionRequest executionRequest = stepExecution.position() == FIRST_STEP_POSITION
+                    ? RuntimeExecutionRequest.fromStepExecution(stepExecution, invocation)
+                    : RuntimeExecutionRequest.fromNextStepExecution(stepExecution, stepInput);
             RuntimeExecutionHandle handle = executionGateway.handoff(runtimeTarget, executionRequest);
             RuntimeExecutionAcceptance acceptance = handle.acceptance();
             if (!acceptance.accepted()) {
@@ -256,6 +273,9 @@ public final class InvocationDispatcher {
                         transition.transitioned()
                 );
             }
+            if (transition.transitioned() && execution.status() == InvocationStepExecutionStatus.COMPLETED) {
+                planAndDispatchNextStep(execution);
+            }
         } catch (RuntimeException exception) {
             logger.warn(
                     "Runtime terminal persistence failed: executionId={}, runtimeInstanceId={}, message={}",
@@ -264,6 +284,65 @@ public final class InvocationDispatcher {
                     exception.getMessage()
             );
         }
+    }
+
+    /**
+     * After a FUNCTION step completes durably, finds the next ordered step of
+     * the same flow from the frozen Invocation snapshot and dispatches it with
+     * the previous step's stored result as its input. This milestone stops
+     * progression when there is no further FUNCTION step; Invocation
+     * completion and final HTTP responses are future work.
+     */
+    private void planAndDispatchNextStep(InvocationStepExecution completedExecution) {
+        Invocation invocation = invocationRegistry
+                .findById(completedExecution.invocationId())
+                .orElseThrow(() -> new IllegalStateException(
+                        "Cannot progress flow: invocation not found: " + completedExecution.invocationId()));
+        InvocationSnapshot snapshot;
+        try {
+            snapshot = objectMapper.readValue(invocation.dependencySnapshot(), InvocationSnapshot.class);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("Cannot progress flow: invalid snapshot for invocation "
+                    + completedExecution.invocationId(), exception);
+        }
+
+        Optional<DispatchableStep> nextStep =
+                executionPlanner.planNextStep(invocation, snapshot, completedExecution.position());
+        if (nextStep.isEmpty()) {
+            logger.info(
+                    "Flow progression stopped: no further FUNCTION step after position={} for invocationId={}, flowKey={}",
+                    completedExecution.position(),
+                    invocation.invocationId(),
+                    invocation.flowKey()
+            );
+            return;
+        }
+
+        InvocationStepExecution nextExecution = stepExecutionRegistry.createOrGetReadyExecution(nextStep.get());
+        if (nextExecution.status() != InvocationStepExecutionStatus.READY) {
+            logger.info(
+                    "Next step execution {} is already {} - skipping duplicate progression dispatch for stepId={}, attempt={}",
+                    nextExecution.id(),
+                    nextExecution.status(),
+                    nextExecution.stepId(),
+                    nextExecution.attempt()
+            );
+            return;
+        }
+        logger.info(
+                "Next step planned: executionId={}, invocationId={}, stepId={}, position={}, componentType={}, componentId={}, componentVersionId={}, attempt={}, status={}",
+                nextExecution.id(),
+                nextExecution.invocationId(),
+                nextExecution.stepId(),
+                nextExecution.position(),
+                nextExecution.componentType(),
+                nextExecution.componentId(),
+                nextExecution.componentVersionId(),
+                nextExecution.attempt(),
+                nextExecution.status()
+        );
+
+        dispatchStepExecution(invocation, nextExecution, completedExecution.result());
     }
 
     /**

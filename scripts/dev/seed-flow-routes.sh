@@ -166,7 +166,7 @@ FROM (
             '77777777-7777-7777-7777-777777777763'::uuid,
             '66666666-6666-6666-6666-666666666661'::uuid,
             'build-orders-response',
-            'FUNCTION',
+            'RESPONSE',
             3,
             '88888888-8888-8888-8888-888888888863'::uuid,
             '99999999-9999-9999-9999-999999999863'::uuid,
@@ -186,6 +186,15 @@ WHERE EXISTS (
       AND fv.status = 'ADOPTED'
 )
 ON CONFLICT DO NOTHING;
+
+-- Sequential-flow milestone: the response-shaping step is no longer an
+-- executable FUNCTION, so progression stops cleanly after "Fetch Orders".
+-- The UPDATE handles dev volumes where the row was seeded as FUNCTION.
+UPDATE flow_steps
+SET component_type = 'RESPONSE'
+WHERE step_key = 'build-orders-response'
+  AND flow_version_id = '66666666-6666-6666-6666-666666666661'
+  AND component_type = 'FUNCTION';
 
 SELECT flow_key, http_method, path, active_flow_version_id, active_flow_version_status
 FROM flows

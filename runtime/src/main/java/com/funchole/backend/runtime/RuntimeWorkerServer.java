@@ -13,11 +13,13 @@ import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -206,6 +208,7 @@ public final class RuntimeWorkerServer implements AutoCloseable {
         WorkerExecutionState existing = executionsByExecutionId.putIfAbsent(message.executionId(), executionState);
         boolean firstAcceptance = existing == null;
         WorkerExecutionState state = firstAcceptance ? executionState : existing;
+
         if (firstAcceptance) {
             logger.info(
                     "Artifact execution accepted: executionId={}, componentVersionId={}, runtimeType={}",
@@ -217,21 +220,39 @@ public final class RuntimeWorkerServer implements AutoCloseable {
             logger.debug("Duplicate INVOKE for already-accepted executionId={}", message.executionId());
         }
 
+        boolean terminalAlreadyDelivered;
+        synchronized (state) {
+            state.addReceiver(out);
+            terminalAlreadyDelivered = state.terminalMessage() != null;
+        }
+
         writeJson(out, RuntimeAcceptedMessage.of(message.executionId()));
         if (firstAcceptance) {
-            executeArtifact(state, out);
-        } else if (state.terminalMessage() != null) {
-            writeJson(out, state.terminalMessage());
+            executeArtifact(state);
+        } else if (terminalAlreadyDelivered) {
+            // This connection arrived after the execution already completed:
+            // replay the immutable terminal message instead of waiting.
+            RuntimeTerminalMessage replayed = state.terminalMessage();
+            try {
+                writeJson(out, replayed);
+            } catch (IOException exception) {
+                logger.warn("Failed to write replayed terminal runtime message for executionId={}: {}",
+                        message.executionId(), exception.getMessage());
+            }
+        } else {
+            // Duplicate INVOKE for an in-flight execution: this connection is
+            // now registered as a delivery target and will receive the
+            // terminal RESULT/ERROR when the artifact finishes.
         }
         return true;
     }
 
-    private void executeArtifact(WorkerExecutionState state, OutputStream out) {
+    private void executeArtifact(WorkerExecutionState state) {
         RuntimeInvokeMessage message = state.message();
         RuntimeInvokePayload payload = message.payload();
 
         if (!SUPPORTED_COMPONENT_TYPE.equalsIgnoreCase(payload.componentType())) {
-            completeAndWrite(state, out, RuntimeTerminalMessage.error(
+            distributeTerminal(state, RuntimeTerminalMessage.error(
                     message.executionId(),
                     "UNSUPPORTED_COMPONENT_TYPE",
                     "Runtime Worker only executes " + runtimeType.toUpperCase(Locale.ROOT) + " " + SUPPORTED_COMPONENT_TYPE
@@ -242,7 +263,7 @@ public final class RuntimeWorkerServer implements AutoCloseable {
 
         Optional<ArtifactReference> artifact = artifactResolver.resolve(payload.componentId(), payload.componentVersionId());
         if (artifact.isEmpty()) {
-            completeAndWrite(state, out, RuntimeTerminalMessage.error(
+            distributeTerminal(state, RuntimeTerminalMessage.error(
                     message.executionId(),
                     "ARTIFACT_NOT_FOUND",
                     "No artifact registered for componentVersionId=" + payload.componentVersionId()
@@ -266,24 +287,43 @@ public final class RuntimeWorkerServer implements AutoCloseable {
             RuntimeTerminalMessage terminalMessage = failure != null
                     ? RuntimeTerminalMessage.error(message.executionId(), "NODE_EXECUTOR_UNAVAILABLE", failure.getMessage())
                     : RuntimeTerminalMessage.from(result);
-            completeAndWrite(state, out, terminalMessage);
+            distributeTerminal(state, terminalMessage);
         });
     }
 
-    private void completeAndWrite(WorkerExecutionState state, OutputStream out, RuntimeTerminalMessage terminalMessage) {
-        if (!state.complete(terminalMessage)) {
-            return;
+    /**
+     * Marks the execution terminal exactly once and delivers the terminal
+     * message to every registered connection output. Writes are best-effort:
+     * a stream belonging to a disconnected connection is skipped so the
+     * remaining registered connections still receive the message.
+     *
+     * Terminal state lives on {@link WorkerExecutionState}, keyed by
+     * executionId only - never on the connection that originated the
+     * INVOKE.
+     */
+    private void distributeTerminal(WorkerExecutionState state, RuntimeTerminalMessage terminalMessage) {
+        List<OutputStream> targets;
+        synchronized (state) {
+            if (!state.complete(terminalMessage)) {
+                return;
+            }
+            targets = List.copyOf(state.receivers());
         }
-        try {
-            writeJson(out, terminalMessage);
-            logger.info(
-                    "Runtime execution completed: executionId={}, type={}",
-                    terminalMessage.executionId(),
-                    terminalMessage.type()
-            );
-        } catch (IOException exception) {
-            logger.warn("Failed to write terminal runtime message for executionId={}: {}",
-                    terminalMessage.executionId(), exception.getMessage());
+        logger.info(
+                "Runtime execution completed: executionId={}, type={}, connectionTargets={}",
+                terminalMessage.executionId(),
+                terminalMessage.type(),
+                targets.size()
+        );
+        for (OutputStream target : targets) {
+            try {
+                writeJson(target, terminalMessage);
+            } catch (IOException exception) {
+                logger.warn(
+                        "Failed to write terminal runtime message for executionId={} to a connection: {}",
+                        terminalMessage.executionId(), exception.getMessage()
+                );
+            }
         }
     }
 
@@ -297,6 +337,7 @@ public final class RuntimeWorkerServer implements AutoCloseable {
 
     private static final class WorkerExecutionState {
         private final RuntimeInvokeMessage message;
+        private final CopyOnWriteArrayList<OutputStream> receivers = new CopyOnWriteArrayList<>();
         private volatile RuntimeTerminalMessage terminalMessage;
 
         private WorkerExecutionState(RuntimeInvokeMessage message) {
@@ -307,11 +348,19 @@ public final class RuntimeWorkerServer implements AutoCloseable {
             return message;
         }
 
+        private List<OutputStream> receivers() {
+            return receivers;
+        }
+
+        private void addReceiver(OutputStream out) {
+            receivers.addIfAbsent(out);
+        }
+
         private RuntimeTerminalMessage terminalMessage() {
             return terminalMessage;
         }
 
-        private synchronized boolean complete(RuntimeTerminalMessage terminalMessage) {
+        private boolean complete(RuntimeTerminalMessage terminalMessage) {
             if (this.terminalMessage != null) {
                 return false;
             }

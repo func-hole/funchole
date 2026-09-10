@@ -4,15 +4,19 @@ import com.funchole.backend.invocation.Invocation;
 import com.funchole.backend.invocation.InvocationFlowSnapshot;
 import com.funchole.backend.invocation.InvocationSnapshot;
 import com.funchole.backend.invocation.InvocationStepSnapshot;
+import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.Set;
 
 /**
- * Decides what should execute next for an invocation, based only on the
- * persisted immutable Invocation snapshot.
+ * Decides what should execute for an invocation, based only on the persisted
+ * immutable Invocation snapshot.
  *
- * For this milestone there is no execution-state tracking, so planning means
- * resolving the first dispatchable step of the root flow.
+ * {@link #planInitialStep} resolves the first executable step of the root
+ * flow. {@link #planNextStep} resolves the next ordered FUNCTION step after a
+ * completed step position - again purely from the frozen snapshot, never from
+ * current/latest Flow definitions.
  *
  * Snapshot ordering contract: the invocation registry persists steps ordered
  * by position and the snapshot validator enforces ascending positions, so the
@@ -76,6 +80,58 @@ public class ExecutionPlanner {
                 candidate.componentVersionId(),
                 runtimeType
         );
+    }
+
+    /**
+     * Resolves the next ordered FUNCTION step after a completed step
+     * position, from the immutable snapshot only.
+     *
+     * Returns empty when there is no further step at all, or when the next
+     * ordered step is not a FUNCTION component (e.g. a RESPONSE step) - both
+     * are legitimate "flow progression stops here" outcomes for this
+     * milestone, not planner failures.
+     */
+    public Optional<DispatchableStep> planNextStep(Invocation invocation, InvocationSnapshot snapshot, int completedPosition) {
+        InvocationFlowSnapshot rootFlow = findRootFlow(snapshot);
+        if (rootFlow == null) {
+            return Optional.empty();
+        }
+        InvocationStepSnapshot next = null;
+        for (InvocationStepSnapshot step : rootFlow.steps() == null ? List.<InvocationStepSnapshot>of() : rootFlow.steps()) {
+            if (step == null || step.position() <= completedPosition) {
+                continue;
+            }
+            if (next == null || step.position() < next.position()) {
+                next = step;
+            }
+        }
+        if (next == null) {
+            return Optional.empty();
+        }
+        String componentType = next.componentType() == null
+                ? ""
+                : next.componentType().trim().toUpperCase(Locale.ROOT);
+        if (!EXECUTABLE_COMPONENT_TYPES.contains(componentType)) {
+            return Optional.empty();
+        }
+        if (next.componentId() == null || next.componentVersionId() == null) {
+            return Optional.empty();
+        }
+        String runtimeType = rootFlow.runtime() == null
+                ? ""
+                : rootFlow.runtime().trim().toUpperCase(Locale.ROOT);
+        return Optional.of(new DispatchableStep(
+                invocation.invocationId(),
+                rootFlow.flowId(),
+                rootFlow.flowVersionId(),
+                next.stepId(),
+                next.position(),
+                next.stepKey(),
+                componentType,
+                next.componentId(),
+                next.componentVersionId(),
+                runtimeType
+        ));
     }
 
     private InvocationFlowSnapshot findRootFlow(InvocationSnapshot snapshot) {

@@ -66,8 +66,7 @@ class RuntimeExecutionRequestTest {
     }
 
     @Test
-    void preservesComponentVersionPinning() {
-        UUID componentId = UUID.randomUUID();
+    void preservesComponentVersionPinning() {        UUID componentId = UUID.randomUUID();
         UUID componentVersionId = UUID.randomUUID();
         InvocationStepExecution stepExecution = new InvocationStepExecution(
                 EXECUTION_ID, INVOCATION_ID, FLOW_ID, FLOW_VERSION_ID, UUID.randomUUID(), 1,
@@ -81,6 +80,22 @@ class RuntimeExecutionRequestTest {
         assertEquals(componentId, request.componentId());
         assertEquals(componentVersionId, request.componentVersionId());
         assertTrue(request.flowId() != null);
+    }
+
+    @Test
+    void nextStepRequestCarriesPreviousResultVerbatim() {
+        InvocationStepExecution stepExecution = new InvocationStepExecution(
+                UUID.randomUUID(), INVOCATION_ID, FLOW_ID, FLOW_VERSION_ID, UUID.randomUUID(), 2,
+                "FUNCTION", UUID.randomUUID(), UUID.randomUUID(), "NODE", null,
+                InvocationStepExecutionStatus.READY, 1, null, null,
+                OffsetDateTime.now(), OffsetDateTime.now(), null, null);
+
+        RuntimeExecutionRequest request = RuntimeExecutionRequest.fromNextStepExecution(
+                stepExecution, "{\"foo\":\"bar\"}");
+
+        assertEquals(stepExecution.id(), request.executionId());
+        assertEquals(1, request.attempt());
+        assertEquals("{\"foo\":\"bar\"}", request.input());
     }
 
     private Invocation invocation(String inputPayload) {
