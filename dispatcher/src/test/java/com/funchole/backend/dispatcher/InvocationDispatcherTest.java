@@ -15,6 +15,7 @@ import com.funchole.backend.invocation.NatsJetStreamInvocationEventPublisher;
 import com.funchole.backend.runtimeregistry.InMemoryRuntimeRegistry;
 import com.funchole.backend.runtimeregistry.RuntimeInstance;
 import com.funchole.backend.runtimeregistry.RuntimeInstanceStatus;
+import com.funchole.backend.runtimeregistry.RuntimeTarget;
 import io.nats.client.Connection;
 import io.nats.client.Nats;
 import java.sql.Statement;
@@ -384,6 +385,109 @@ class InvocationDispatcherTest {
         assertEquals(InvocationStatus.PENDING, invocationRegistry.findById(invocation.invocationId()).orElseThrow().status());
     }
 
+    @Test
+    void handsOffPinnedExecutionRequestToSelectedRuntimeAndAcks() throws Exception {
+        UUID flowId = UUID.fromString("10000000-0000-0000-0000-000000000161");
+        UUID flowVersionId = UUID.fromString("20000000-0000-0000-0000-000000000161");
+        UUID componentId = UUID.fromString("30000000-0000-0000-0000-000000000161");
+        UUID componentVersionId = UUID.fromString("40000000-0000-0000-0000-000000000161");
+        insertFlow(flowId, "flw_orders_list", flowVersionId, 1);
+        insertStep(flowVersionId, "validate-orders-request", "FUNCTION", 1, componentId, componentVersionId);
+        Invocation invocation = invocationRegistry.create(new CreateInvocationRequest(
+                flowId,
+                "flw_orders_list",
+                flowVersionId,
+                "{\"path\":\"/orders\"}"
+        ));
+        CapturingRuntimeExecutionGateway gateway = new CapturingRuntimeExecutionGateway();
+        InvocationDispatcher dispatcher = new InvocationDispatcher(
+                natsConnection, invocationRegistry, stepExecutionRegistry, runtimeRegistry,
+                new ExecutionPlanner(), gateway
+        );
+
+        assertTrue(dispatcher.processNext(Duration.ofSeconds(5)));
+
+        RuntimeExecutionRequest request = gateway.capturedRequest();
+        RuntimeTarget target = gateway.capturedTarget();
+        assertEquals(invocation.invocationId(), request.invocationId());
+        assertEquals(flowId, request.flowId());
+        assertEquals(flowVersionId, request.flowVersionId());
+        assertEquals(componentId, request.componentId());
+        assertEquals(componentVersionId, request.componentVersionId());
+        assertEquals("FUNCTION", request.componentType());
+        assertEquals("NODE", request.runtimeType());
+        assertEquals(1, request.attempt());
+        assertEquals("{\"path\": \"/orders\"}", request.input());
+        assertEquals("NODE", target.runtimeType());
+        assertEquals(1, runtimeRegistry.find(DEV_RUNTIME_INSTANCE_ID).orElseThrow().inFlight());
+        assertFalse(dispatcher.processNext(Duration.ofMillis(500)));
+    }
+
+    @Test
+    void releasesReservedCapacityAndDoesNotAckWhenHandoffRejected() throws Exception {
+        UUID flowId = UUID.fromString("10000000-0000-0000-0000-000000000171");
+        UUID flowVersionId = UUID.fromString("20000000-0000-0000-0000-000000000171");
+        insertFlow(flowId, "flw_orders_list", flowVersionId, 1);
+        insertStep(
+                flowVersionId,
+                "validate-orders-request",
+                "FUNCTION",
+                1,
+                UUID.fromString("30000000-0000-0000-0000-000000000171"),
+                UUID.fromString("40000000-0000-0000-0000-000000000171")
+        );
+        invocationRegistry.create(new CreateInvocationRequest(
+                flowId,
+                "flw_orders_list",
+                flowVersionId,
+                "{\"path\":\"/orders\"}"
+        ));
+        InMemoryRuntimeRegistry singleCapacityRegistry = new InMemoryRuntimeRegistry();
+        singleCapacityRegistry.register(new RuntimeInstance(
+                "runtime-node-single", "NODE", RuntimeInstanceStatus.AVAILABLE, 1, 0));
+        InvocationDispatcher dispatcher = new InvocationDispatcher(
+                natsConnection, invocationRegistry, stepExecutionRegistry, singleCapacityRegistry,
+                new ExecutionPlanner(), new RejectingRuntimeExecutionGateway()
+        );
+
+        assertFalse(dispatcher.processNext(Duration.ofSeconds(5)));
+
+        assertEquals(0, singleCapacityRegistry.find("runtime-node-single").orElseThrow().inFlight());
+        assertEquals(1, countStepExecutions());
+    }
+
+    @Test
+    void releasesReservedCapacityAndDoesNotAckWhenHandoffThrows() throws Exception {
+        UUID flowId = UUID.fromString("10000000-0000-0000-0000-000000000181");
+        UUID flowVersionId = UUID.fromString("20000000-0000-0000-0000-000000000181");
+        insertFlow(flowId, "flw_orders_list", flowVersionId, 1);
+        insertStep(
+                flowVersionId,
+                "validate-orders-request",
+                "FUNCTION",
+                1,
+                UUID.fromString("30000000-0000-0000-0000-000000000181"),
+                UUID.fromString("40000000-0000-0000-0000-000000000181")
+        );
+        invocationRegistry.create(new CreateInvocationRequest(
+                flowId,
+                "flw_orders_list",
+                flowVersionId,
+                "{\"path\":\"/orders\"}"
+        ));
+        InMemoryRuntimeRegistry singleCapacityRegistry = new InMemoryRuntimeRegistry();
+        singleCapacityRegistry.register(new RuntimeInstance(
+                "runtime-node-single", "NODE", RuntimeInstanceStatus.AVAILABLE, 1, 0));
+        InvocationDispatcher dispatcher = new InvocationDispatcher(
+                natsConnection, invocationRegistry, stepExecutionRegistry, singleCapacityRegistry,
+                new ExecutionPlanner(), new ThrowingRuntimeExecutionGateway()
+        );
+
+        assertFalse(dispatcher.processNext(Duration.ofSeconds(5)));
+
+        assertEquals(0, singleCapacityRegistry.find("runtime-node-single").orElseThrow().inFlight());
+    }
+
     private DataSource dataSource() {
         PGSimpleDataSource dataSource = new PGSimpleDataSource();
         dataSource.setURL(postgres.getJdbcUrl());
@@ -518,6 +622,44 @@ class InvocationDispatcherTest {
         @Override
         public InvocationStepExecution createOrGetReadyExecution(DispatchableStep dispatchableStep) {
             throw new IllegalStateException("Simulated step execution persistence failure");
+        }
+    }
+
+    private static final class CapturingRuntimeExecutionGateway implements RuntimeExecutionGateway {
+
+        private final InMemoryRuntimeExecutionGateway delegate = new InMemoryRuntimeExecutionGateway();
+        private RuntimeTarget capturedTarget;
+        private RuntimeExecutionRequest capturedRequest;
+
+        @Override
+        public RuntimeExecutionAcceptance handoff(RuntimeTarget target, RuntimeExecutionRequest request) {
+            capturedTarget = target;
+            capturedRequest = request;
+            return delegate.handoff(target, request);
+        }
+
+        RuntimeTarget capturedTarget() {
+            return capturedTarget;
+        }
+
+        RuntimeExecutionRequest capturedRequest() {
+            return capturedRequest;
+        }
+    }
+
+    private static final class RejectingRuntimeExecutionGateway implements RuntimeExecutionGateway {
+
+        @Override
+        public RuntimeExecutionAcceptance handoff(RuntimeTarget target, RuntimeExecutionRequest request) {
+            return RuntimeExecutionAcceptance.reject(request.executionId(), "simulated handoff rejection");
+        }
+    }
+
+    private static final class ThrowingRuntimeExecutionGateway implements RuntimeExecutionGateway {
+
+        @Override
+        public RuntimeExecutionAcceptance handoff(RuntimeTarget target, RuntimeExecutionRequest request) {
+            throw new IllegalStateException("Simulated runtime gateway failure");
         }
     }
 }

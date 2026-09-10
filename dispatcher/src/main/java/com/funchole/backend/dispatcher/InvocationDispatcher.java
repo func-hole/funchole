@@ -37,6 +37,7 @@ public final class InvocationDispatcher {
     private final ObjectMapper objectMapper;
     private final InvocationSnapshotValidator snapshotValidator;
     private final ExecutionPlanner executionPlanner;
+    private final RuntimeExecutionGateway executionGateway;
     private final JetStreamSubscription subscription;
 
     public InvocationDispatcher(
@@ -45,7 +46,8 @@ public final class InvocationDispatcher {
             InvocationStepExecutionRegistry stepExecutionRegistry,
             RuntimeRegistry runtimeRegistry
     ) {
-        this(connection, invocationRegistry, stepExecutionRegistry, runtimeRegistry, new ExecutionPlanner());
+        this(connection, invocationRegistry, stepExecutionRegistry, runtimeRegistry,
+                new ExecutionPlanner(), new InMemoryRuntimeExecutionGateway());
     }
 
     InvocationDispatcher(
@@ -55,6 +57,18 @@ public final class InvocationDispatcher {
             RuntimeRegistry runtimeRegistry,
             ExecutionPlanner executionPlanner
     ) {
+        this(connection, invocationRegistry, stepExecutionRegistry, runtimeRegistry,
+                executionPlanner, new InMemoryRuntimeExecutionGateway());
+    }
+
+    InvocationDispatcher(
+            Connection connection,
+            InvocationRegistry invocationRegistry,
+            InvocationStepExecutionRegistry stepExecutionRegistry,
+            RuntimeRegistry runtimeRegistry,
+            ExecutionPlanner executionPlanner,
+            RuntimeExecutionGateway executionGateway
+    ) {
         this.connection = connection;
         this.invocationRegistry = invocationRegistry;
         this.stepExecutionRegistry = stepExecutionRegistry;
@@ -62,6 +76,7 @@ public final class InvocationDispatcher {
         this.objectMapper = new ObjectMapper();
         this.snapshotValidator = new InvocationSnapshotValidator();
         this.executionPlanner = executionPlanner;
+        this.executionGateway = executionGateway;
         ensureStream();
         this.subscription = subscribe();
     }
@@ -136,14 +151,37 @@ public final class InvocationDispatcher {
 
         RuntimeRequirement runtimeRequirement = new RuntimeRequirement(stepExecution.runtimeType());
         RuntimeTarget runtimeTarget = runtimeRegistry.selectAndReserve(runtimeRequirement);
-        RuntimeInstance selectedInstance = runtimeRegistry.find(runtimeTarget.runtimeInstanceId()).orElse(null);
         logger.info(
-                "Runtime selected: executionId={}, invocationId={}, stepId={}, runtimeInstanceId={}, runtimeType={}, inFlight={}, capacity={}",
+                "Runtime selected: executionId={}, invocationId={}, stepId={}, runtimeInstanceId={}, runtimeType={}",
                 stepExecution.id(),
                 stepExecution.invocationId(),
                 stepExecution.stepId(),
                 runtimeTarget.runtimeInstanceId(),
+                runtimeTarget.runtimeType()
+        );
+        try {
+            RuntimeExecutionRequest executionRequest =
+                    RuntimeExecutionRequest.fromStepExecution(stepExecution, invocation);
+            RuntimeExecutionAcceptance acceptance = executionGateway.handoff(runtimeTarget, executionRequest);
+            if (!acceptance.accepted()) {
+                throw new IllegalStateException("Runtime execution handoff rejected: " + acceptance.rejectionReason());
+            }
+        } catch (RuntimeException handoffFailure) {
+            runtimeRegistry.release(runtimeTarget.runtimeInstanceId());
+            throw handoffFailure;
+        }
+
+        RuntimeInstance selectedInstance = runtimeRegistry.find(runtimeTarget.runtimeInstanceId()).orElse(null);
+        logger.info(
+                "Runtime execution accepted: executionId={}, invocationId={}, stepId={}, componentId={}, componentVersionId={}, runtimeInstanceId={}, runtimeType={}, attempt={}, inFlight={}, capacity={}",
+                stepExecution.id(),
+                stepExecution.invocationId(),
+                stepExecution.stepId(),
+                stepExecution.componentId(),
+                stepExecution.componentVersionId(),
+                runtimeTarget.runtimeInstanceId(),
                 runtimeTarget.runtimeType(),
+                stepExecution.attempt(),
                 selectedInstance == null ? "?" : selectedInstance.inFlight(),
                 selectedInstance == null ? "?" : selectedInstance.capacity()
         );
