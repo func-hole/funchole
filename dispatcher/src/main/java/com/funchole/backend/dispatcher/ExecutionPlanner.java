@@ -27,6 +27,16 @@ public class ExecutionPlanner {
 
     private static final Set<String> EXECUTABLE_COMPONENT_TYPES = Set.of("FUNCTION");
 
+    /**
+     * Component types {@link #planNextStep} will progress into. FUNCTION
+     * steps run through the Runtime Registry/IPC; RESPONSE steps are executed
+     * inline by the Dispatcher's orchestration layer (see
+     * InvocationDispatcher) with no runtime involved. Other component types
+     * are not supported yet and, like an absent next step, simply stop
+     * progression.
+     */
+    private static final Set<String> PROGRESSABLE_COMPONENT_TYPES = Set.of("FUNCTION", "RESPONSE");
+
     public DispatchableStep planInitialStep(Invocation invocation, InvocationSnapshot snapshot) {
         InvocationFlowSnapshot rootFlow = findRootFlow(snapshot);
         if (rootFlow == null) {
@@ -83,13 +93,15 @@ public class ExecutionPlanner {
     }
 
     /**
-     * Resolves the next ordered FUNCTION step after a completed step
+     * Resolves the next ordered progressable step after a completed step
      * position, from the immutable snapshot only.
      *
      * Returns empty when there is no further step at all, or when the next
-     * ordered step is not a FUNCTION component (e.g. a RESPONSE step) - both
-     * are legitimate "flow progression stops here" outcomes for this
-     * milestone, not planner failures.
+     * ordered step's component type is not one this milestone progresses
+     * into (see {@link #PROGRESSABLE_COMPONENT_TYPES}) - both are legitimate
+     * "flow progression stops here" outcomes, not planner failures. The
+     * caller (InvocationDispatcher) is responsible for routing a returned
+     * RESPONSE step to inline orchestration instead of the Runtime Registry.
      */
     public Optional<DispatchableStep> planNextStep(Invocation invocation, InvocationSnapshot snapshot, int completedPosition) {
         InvocationFlowSnapshot rootFlow = findRootFlow(snapshot);
@@ -111,7 +123,7 @@ public class ExecutionPlanner {
         String componentType = next.componentType() == null
                 ? ""
                 : next.componentType().trim().toUpperCase(Locale.ROOT);
-        if (!EXECUTABLE_COMPONENT_TYPES.contains(componentType)) {
+        if (!PROGRESSABLE_COMPONENT_TYPES.contains(componentType)) {
             return Optional.empty();
         }
         if (next.componentId() == null || next.componentVersionId() == null) {

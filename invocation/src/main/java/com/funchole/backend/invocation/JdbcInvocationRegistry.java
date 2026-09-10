@@ -11,11 +11,17 @@ import java.time.OffsetDateTime;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import javax.sql.DataSource;
 
 public final class JdbcInvocationRegistry implements InvocationRegistry {
+
+    private static final String SELECT_COLUMNS = """
+            id, flow_id, flow_key, flow_version_id, status, input_payload, dependency_snapshot,
+            result, error, created_at, updated_at, completed_at
+            """;
 
     private final DataSource dataSource;
     private final ObjectMapper objectMapper;
@@ -50,8 +56,8 @@ public final class JdbcInvocationRegistry implements InvocationRegistry {
                             dependency_snapshot
                         )
                         values (?, ?, ?, ?, ?, ?, ?)
-                        returning id, flow_id, flow_key, flow_version_id, status, input_payload, dependency_snapshot, created_at, updated_at
-                        """)) {
+                        returning
+                        """ + SELECT_COLUMNS)) {
                 statement.setObject(1, invocationId);
                 statement.setObject(2, request.flowId());
                 statement.setString(3, request.flowKey());
@@ -77,14 +83,104 @@ public final class JdbcInvocationRegistry implements InvocationRegistry {
 
     @Override
     public Optional<Invocation> findById(UUID invocationId) {
-        try (
-                Connection connection = dataSource.getConnection();
-                PreparedStatement statement = connection.prepareStatement("""
-                        select id, flow_id, flow_key, flow_version_id, status, input_payload, dependency_snapshot, created_at, updated_at
-                        from invocations
-                        where id = ?
-                        """)
-        ) {
+        try (Connection connection = dataSource.getConnection()) {
+            return findById(connection, invocationId);
+        } catch (SQLException exception) {
+            throw new IllegalStateException("Failed to retrieve invocation " + invocationId, exception);
+        }
+    }
+
+    @Override
+    public InvocationTransition markCompleted(UUID invocationId, String result) {
+        return markTerminal(invocationId, InvocationStatus.COMPLETED, result, null);
+    }
+
+    @Override
+    public InvocationTransition markFailed(UUID invocationId, String error) {
+        return markTerminal(invocationId, InvocationStatus.FAILED, null, error);
+    }
+
+    private InvocationTransition markTerminal(UUID invocationId, InvocationStatus terminalStatus, String result, String error) {
+        try (Connection connection = dataSource.getConnection()) {
+            String canonicalResult = canonicalizeJson(connection, result);
+            String canonicalError = canonicalizeJson(connection, error);
+            Invocation current = findById(connection, invocationId)
+                    .orElseThrow(() -> new IllegalStateException("Invocation not found: " + invocationId));
+            if (current.status() == terminalStatus) {
+                if (Objects.equals(current.result(), canonicalResult) && Objects.equals(current.error(), canonicalError)) {
+                    return new InvocationTransition(current, false);
+                }
+                throw new IllegalStateException("Conflicting terminal payload for invocation " + invocationId);
+            }
+            if (current.status() == InvocationStatus.COMPLETED || current.status() == InvocationStatus.FAILED) {
+                throw new IllegalStateException("Cannot overwrite terminal invocation " + invocationId
+                        + " from " + current.status() + " to " + terminalStatus);
+            }
+            if (current.status() != InvocationStatus.PENDING) {
+                throw new IllegalStateException("Cannot mark invocation " + invocationId
+                        + " terminal from status " + current.status());
+            }
+
+            Invocation updated;
+            try (PreparedStatement statement = connection.prepareStatement("""
+                    update invocations
+                    set status = ?,
+                        result = ?,
+                        error = ?,
+                        completed_at = coalesce(completed_at, CURRENT_TIMESTAMP),
+                        updated_at = CURRENT_TIMESTAMP
+                    where id = ?
+                      and status = ?
+                    returning
+                    """ + SELECT_COLUMNS)) {
+                statement.setString(1, terminalStatus.name());
+                statement.setObject(2, canonicalResult, Types.OTHER);
+                statement.setObject(3, canonicalError, Types.OTHER);
+                statement.setObject(4, invocationId);
+                statement.setString(5, InvocationStatus.PENDING.name());
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    if (!resultSet.next()) {
+                        Invocation latest = findById(connection, invocationId)
+                                .orElseThrow(() -> new IllegalStateException("Invocation disappeared: " + invocationId));
+                        return new InvocationTransition(latest, false);
+                    }
+                    updated = toInvocation(resultSet);
+                }
+            }
+
+            if (terminalStatus == InvocationStatus.COMPLETED) {
+                eventPublisher.publishInvocationCompleted(updated);
+            } else {
+                eventPublisher.publishInvocationFailed(updated);
+            }
+            return new InvocationTransition(updated, true);
+        } catch (SQLException exception) {
+            throw new IllegalStateException("Failed to mark terminal invocation: " + invocationId, exception);
+        }
+    }
+
+    private String canonicalizeJson(Connection connection, String value) throws SQLException {
+        if (value == null) {
+            return null;
+        }
+        try (PreparedStatement statement = connection.prepareStatement("select ?::jsonb::text")) {
+            statement.setString(1, value);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (resultSet.next()) {
+                    return resultSet.getString(1);
+                }
+            }
+        }
+        throw new IllegalStateException("Failed to canonicalize JSON payload");
+    }
+
+    private Optional<Invocation> findById(Connection connection, UUID invocationId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                select
+                """ + SELECT_COLUMNS + """
+                from invocations
+                where id = ?
+                """)) {
             statement.setObject(1, invocationId);
             try (ResultSet resultSet = statement.executeQuery()) {
                 if (resultSet.next()) {
@@ -92,8 +188,6 @@ public final class JdbcInvocationRegistry implements InvocationRegistry {
                 }
             }
             return Optional.empty();
-        } catch (SQLException exception) {
-            throw new IllegalStateException("Failed to retrieve invocation " + invocationId, exception);
         }
     }
 
@@ -106,8 +200,11 @@ public final class JdbcInvocationRegistry implements InvocationRegistry {
                 InvocationStatus.valueOf(resultSet.getString("status")),
                 resultSet.getString("input_payload"),
                 resultSet.getString("dependency_snapshot"),
+                resultSet.getString("result"),
+                resultSet.getString("error"),
                 resultSet.getObject("created_at", OffsetDateTime.class),
-                resultSet.getObject("updated_at", OffsetDateTime.class)
+                resultSet.getObject("updated_at", OffsetDateTime.class),
+                resultSet.getObject("completed_at", OffsetDateTime.class)
         );
     }
 

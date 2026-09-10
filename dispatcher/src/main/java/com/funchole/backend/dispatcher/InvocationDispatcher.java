@@ -1,13 +1,16 @@
 package com.funchole.backend.dispatcher;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.funchole.backend.invocation.Invocation;
 import com.funchole.backend.invocation.InvocationMessagingConfig;
 import com.funchole.backend.invocation.InvocationReadyEvent;
 import com.funchole.backend.invocation.InvocationRegistry;
 import com.funchole.backend.invocation.InvocationSnapshot;
 import com.funchole.backend.invocation.InvocationStatus;
+import com.funchole.backend.invocation.InvocationTransition;
 import com.funchole.backend.runtimeregistry.RuntimeInstance;
 import com.funchole.backend.runtimeregistry.RuntimeRegistry;
 import com.funchole.backend.runtimeregistry.RuntimeRequirement;
@@ -34,7 +37,16 @@ import org.slf4j.LoggerFactory;
 
 public final class InvocationDispatcher {
     private static final Logger logger = LoggerFactory.getLogger(InvocationDispatcher.class);
-    private static final int FIRST_STEP_POSITION = 1;
+    private static final String RESPONSE_COMPONENT_TYPE = "RESPONSE";
+
+    /**
+     * Sentinel runtime-instance identity recorded for steps executed inline
+     * by the Dispatcher's own orchestration layer (currently only RESPONSE)
+     * rather than handed off to a real runtime. Keeps the existing
+     * READY -&gt; RUNNING -&gt; COMPLETED step-execution lifecycle uniform without
+     * requiring a Runtime Registry reservation for these steps.
+     */
+    private static final String ORCHESTRATION_RUNTIME_INSTANCE_ID = "dispatcher-orchestration";
 
     private final Connection connection;
     private final InvocationRegistry invocationRegistry;
@@ -170,19 +182,21 @@ public final class InvocationDispatcher {
                 stepExecution.status()
         );
 
-        dispatchStepExecution(invocation, stepExecution, null);
+        dispatchStepExecution(stepExecution, invocation.inputPayload());
     }
 
     /**
      * The single dispatch path shared by the initial planned step and every
-     * sequentially progressed step: reserve runtime capacity, build the
-     * execution request, hand off to the runtime worker, persist RUNNING on
-     * acceptance, and register terminal-completion handling.
+     * sequentially progressed FUNCTION step: reserve runtime capacity, build
+     * the execution request, hand off to the runtime worker, persist RUNNING
+     * on acceptance, and register terminal-completion handling.
      *
-     * {@code stepInput} is the request input override; {@code null} means the
-     * step is the first step and receives the root Invocation input payload.
+     * {@code stepInput} is always supplied explicitly by the caller - the
+     * flow's first step receives the root Invocation input payload, and every
+     * later step receives the previous step's stored result. Nothing here
+     * infers that from {@code position}.
      */
-    private void dispatchStepExecution(Invocation invocation, InvocationStepExecution stepExecution, String stepInput) {
+    private void dispatchStepExecution(InvocationStepExecution stepExecution, String stepInput) {
         RuntimeRequirement runtimeRequirement = new RuntimeRequirement(stepExecution.runtimeType());
         RuntimeTarget runtimeTarget = runtimeRegistry.selectAndReserve(runtimeRequirement);
         logger.info(
@@ -194,9 +208,7 @@ public final class InvocationDispatcher {
                 runtimeTarget.runtimeType()
         );
         try {
-            RuntimeExecutionRequest executionRequest = stepExecution.position() == FIRST_STEP_POSITION
-                    ? RuntimeExecutionRequest.fromStepExecution(stepExecution, invocation)
-                    : RuntimeExecutionRequest.fromNextStepExecution(stepExecution, stepInput);
+            RuntimeExecutionRequest executionRequest = RuntimeExecutionRequest.of(stepExecution, stepInput);
             RuntimeExecutionHandle handle = executionGateway.handoff(runtimeTarget, executionRequest);
             RuntimeExecutionAcceptance acceptance = handle.acceptance();
             if (!acceptance.accepted()) {
@@ -247,34 +259,13 @@ public final class InvocationDispatcher {
 
     private void handleTerminalResult(RuntimeExecutionResult result, RuntimeTarget runtimeTarget) {
         try {
-            InvocationStepExecutionTransition transition = switch (result.terminalType()) {
-                case RESULT -> stepExecutionRegistry.markCompleted(result.executionId(), result);
-                case ERROR -> stepExecutionRegistry.markFailed(result.executionId(), result);
-            };
+            InvocationStepExecutionTransition transition = persistStepTerminal(result);
             if (transition.transitioned()) {
                 runtimeRegistry.release(runtimeTarget.runtimeInstanceId());
             }
-            InvocationStepExecution execution = transition.execution();
-            if (execution.status() == InvocationStepExecutionStatus.COMPLETED) {
-                logger.info(
-                        "Runtime execution completed: executionId={}, status={}, runtimeInstanceId={}, capacityReleased={}",
-                        execution.id(),
-                        execution.status(),
-                        runtimeTarget.runtimeInstanceId(),
-                        transition.transitioned()
-                );
-            } else {
-                logger.info(
-                        "Runtime execution failed: executionId={}, status={}, errorCode={}, runtimeInstanceId={}, capacityReleased={}",
-                        execution.id(),
-                        execution.status(),
-                        result.error() == null ? "UNKNOWN" : result.error().code(),
-                        runtimeTarget.runtimeInstanceId(),
-                        transition.transitioned()
-                );
-            }
-            if (transition.transitioned() && execution.status() == InvocationStepExecutionStatus.COMPLETED) {
-                planAndDispatchNextStep(execution);
+            logStepTerminal(transition, result, runtimeTarget.runtimeInstanceId());
+            if (transition.transitioned()) {
+                onStepTerminal(transition.execution());
             }
         } catch (RuntimeException exception) {
             logger.warn(
@@ -286,12 +277,72 @@ public final class InvocationDispatcher {
         }
     }
 
+    private InvocationStepExecutionTransition persistStepTerminal(RuntimeExecutionResult result) {
+        return switch (result.terminalType()) {
+            case RESULT -> stepExecutionRegistry.markCompleted(result.executionId(), result);
+            case ERROR -> stepExecutionRegistry.markFailed(result.executionId(), result);
+        };
+    }
+
+    private void logStepTerminal(InvocationStepExecutionTransition transition, RuntimeExecutionResult result, String runtimeInstanceId) {
+        InvocationStepExecution execution = transition.execution();
+        if (execution.status() == InvocationStepExecutionStatus.COMPLETED) {
+            logger.info(
+                    "Runtime execution completed: executionId={}, status={}, runtimeInstanceId={}, capacityReleased={}",
+                    execution.id(),
+                    execution.status(),
+                    runtimeInstanceId,
+                    transition.transitioned()
+            );
+        } else {
+            logger.info(
+                    "Runtime execution failed: executionId={}, status={}, errorCode={}, runtimeInstanceId={}, capacityReleased={}",
+                    execution.id(),
+                    execution.status(),
+                    result.error() == null ? "UNKNOWN" : result.error().code(),
+                    runtimeInstanceId,
+                    transition.transitioned()
+            );
+        }
+    }
+
     /**
-     * After a FUNCTION step completes durably, finds the next ordered step of
-     * the same flow from the frozen Invocation snapshot and dispatches it with
-     * the previous step's stored result as its input. This milestone stops
-     * progression when there is no further FUNCTION step; Invocation
-     * completion and final HTTP responses are future work.
+     * Routes a step's durable terminal state to whatever happens next:
+     * <ul>
+     *   <li>FAILED (any component type) - the Invocation becomes FAILED.</li>
+     *   <li>COMPLETED RESPONSE step - the Invocation becomes COMPLETED, using
+     *       the RESPONSE step's own result as the final response.</li>
+     *   <li>COMPLETED FUNCTION step - flow progression continues to the next
+     *       ordered step.</li>
+     * </ul>
+     */
+    private void onStepTerminal(InvocationStepExecution execution) {
+        if (execution.status() == InvocationStepExecutionStatus.FAILED) {
+            failInvocation(execution);
+            return;
+        }
+        if (execution.status() != InvocationStepExecutionStatus.COMPLETED) {
+            return;
+        }
+        if (isResponseStep(execution)) {
+            completeInvocation(execution);
+        } else {
+            planAndDispatchNextStep(execution);
+        }
+    }
+
+    private boolean isResponseStep(InvocationStepExecution execution) {
+        return RESPONSE_COMPONENT_TYPE.equalsIgnoreCase(execution.componentType());
+    }
+
+    /**
+     * After a step completes durably, finds the next ordered step of the same
+     * flow from the frozen Invocation snapshot and either dispatches it (a
+     * FUNCTION step, through the Runtime Registry/IPC as usual) or executes
+     * it inline (a RESPONSE step), passing the previous step's stored result
+     * as input either way. Stops silently when there is no further
+     * progressable step - a flow that ends without a RESPONSE step leaves its
+     * Invocation PENDING, unchanged from the previous milestone.
      */
     private void planAndDispatchNextStep(InvocationStepExecution completedExecution) {
         Invocation invocation = invocationRegistry
@@ -310,7 +361,7 @@ public final class InvocationDispatcher {
                 executionPlanner.planNextStep(invocation, snapshot, completedExecution.position());
         if (nextStep.isEmpty()) {
             logger.info(
-                    "Flow progression stopped: no further FUNCTION step after position={} for invocationId={}, flowKey={}",
+                    "Flow progression stopped: no further step after position={} for invocationId={}, flowKey={}",
                     completedExecution.position(),
                     invocation.invocationId(),
                     invocation.flowKey()
@@ -342,7 +393,98 @@ public final class InvocationDispatcher {
                 nextExecution.status()
         );
 
-        dispatchStepExecution(invocation, nextExecution, completedExecution.result());
+        if (isResponseStep(nextExecution)) {
+            executeResponseStep(nextExecution, completedExecution.result());
+        } else {
+            dispatchStepExecution(nextExecution, completedExecution.result());
+        }
+    }
+
+    /**
+     * Executes a RESPONSE step inline in the orchestration layer: no Runtime
+     * Registry reservation and no IPC round trip. The step still moves
+     * through the same READY -&gt; RUNNING -&gt; COMPLETED lifecycle as a FUNCTION
+     * step for consistency, using {@link #ORCHESTRATION_RUNTIME_INSTANCE_ID}
+     * as its recorded runtime instance.
+     */
+    private void executeResponseStep(InvocationStepExecution responseExecution, String previousResult) {
+        InvocationStepExecution running =
+                stepExecutionRegistry.markRunning(responseExecution.id(), ORCHESTRATION_RUNTIME_INSTANCE_ID);
+        logger.info(
+                "Response step running: executionId={}, invocationId={}, stepId={}",
+                running.id(), running.invocationId(), running.stepId()
+        );
+
+        RuntimeExecutionResult result;
+        try {
+            result = RuntimeExecutionResult.success(running.id(), buildResponseOutput(previousResult));
+        } catch (RuntimeException exception) {
+            result = RuntimeExecutionResult.failure(
+                    running.id(), new RuntimeExecutionError("RESPONSE_BUILD_ERROR", exception.getMessage()));
+        }
+
+        try {
+            InvocationStepExecutionTransition transition = persistStepTerminal(result);
+            logStepTerminal(transition, result, ORCHESTRATION_RUNTIME_INSTANCE_ID);
+            if (transition.transitioned()) {
+                onStepTerminal(transition.execution());
+            }
+        } catch (RuntimeException exception) {
+            logger.warn(
+                    "Response step terminal persistence failed: executionId={}, message={}",
+                    running.id(), exception.getMessage()
+            );
+        }
+    }
+
+    /**
+     * The first RESPONSE contract for this milestone: {"status": 200, "body":
+     * &lt;previous step result&gt;}. No headers/templates/mapping DSL yet.
+     */
+    private String buildResponseOutput(String previousResult) {
+        try {
+            JsonNode bodyNode = previousResult == null
+                    ? objectMapper.nullNode()
+                    : objectMapper.readTree(previousResult);
+            ObjectNode response = objectMapper.createObjectNode();
+            response.put("status", 200);
+            response.set("body", bodyNode);
+            return objectMapper.writeValueAsString(response);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("Failed to build RESPONSE output from previous step result", exception);
+        }
+    }
+
+    private void completeInvocation(InvocationStepExecution responseExecution) {
+        try {
+            InvocationTransition transition =
+                    invocationRegistry.markCompleted(responseExecution.invocationId(), responseExecution.result());
+            logger.info(
+                    "Invocation completed: invocationId={}, published={}",
+                    responseExecution.invocationId(), transition.transitioned()
+            );
+        } catch (RuntimeException exception) {
+            logger.warn(
+                    "Failed to persist Invocation completion: invocationId={}, message={}",
+                    responseExecution.invocationId(), exception.getMessage()
+            );
+        }
+    }
+
+    private void failInvocation(InvocationStepExecution failedExecution) {
+        try {
+            InvocationTransition transition =
+                    invocationRegistry.markFailed(failedExecution.invocationId(), failedExecution.error());
+            logger.info(
+                    "Invocation failed: invocationId={}, published={}",
+                    failedExecution.invocationId(), transition.transitioned()
+            );
+        } catch (RuntimeException exception) {
+            logger.warn(
+                    "Failed to persist Invocation failure: invocationId={}, message={}",
+                    failedExecution.invocationId(), exception.getMessage()
+            );
+        }
     }
 
     /**
@@ -383,14 +525,18 @@ public final class InvocationDispatcher {
     private void ensureStream() {
         try {
             var management = connection.jetStreamManagement();
+            StreamConfiguration configuration = StreamConfiguration.builder()
+                    .name(InvocationMessagingConfig.STREAM_NAME)
+                    .subjects(
+                            InvocationMessagingConfig.INVOCATION_READY_SUBJECT,
+                            InvocationMessagingConfig.INVOCATION_TERMINAL_SUBJECT
+                    )
+                    .storageType(StorageType.File)
+                    .build();
             try {
                 management.getStreamInfo(InvocationMessagingConfig.STREAM_NAME);
+                management.updateStream(configuration);
             } catch (JetStreamApiException exception) {
-                StreamConfiguration configuration = StreamConfiguration.builder()
-                        .name(InvocationMessagingConfig.STREAM_NAME)
-                        .subjects(InvocationMessagingConfig.INVOCATION_READY_SUBJECT)
-                        .storageType(StorageType.File)
-                        .build();
                 management.addStream(configuration);
             }
         } catch (IOException | JetStreamApiException exception) {

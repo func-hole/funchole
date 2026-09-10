@@ -147,8 +147,11 @@ class ExecutionPlannerTest {
                 InvocationStatus.PENDING,
                 "{}",
                 "{}",
+                null,
+                null,
                 OffsetDateTime.now(),
-                OffsetDateTime.now()
+                OffsetDateTime.now(),
+                null
         );
     }
 
@@ -224,13 +227,28 @@ class ExecutionPlannerTest {
     }
 
     @Test
-    void stopsWhenNextOrderedStepIsNotAFunctionComponent() {
+    void planNextStepSelectsAResponseStepAfterTheLastFunctionStep() {
         InvocationStepSnapshot first = step("validate-orders-request", "FUNCTION", 1,
                 "88888888-8888-8888-8888-888888888861", "99999999-9999-9999-9999-999999999861");
         InvocationStepSnapshot response = step("build-orders-response", "RESPONSE", 2,
                 "88888888-8888-8888-8888-888888888863", "99999999-9999-9999-9999-999999999863");
 
-        assertTrue(planner.planNextStep(invocation(), snapshot(List.of(first, response)), 1).isEmpty());
+        Optional<DispatchableStep> next = planner.planNextStep(invocation(), snapshot(List.of(first, response)), 1);
+
+        assertTrue(next.isPresent());
+        assertEquals("RESPONSE", next.get().componentType());
+        assertEquals(response.stepId(), next.get().stepId());
+        assertEquals(2, next.get().position());
+    }
+
+    @Test
+    void stopsWhenNextOrderedStepIsAnUnsupportedComponentType() {
+        InvocationStepSnapshot first = step("validate-orders-request", "FUNCTION", 1,
+                "88888888-8888-8888-8888-888888888861", "99999999-9999-9999-9999-999999999861");
+        InvocationStepSnapshot middleware = step("log-request", "MIDDLEWARE", 2,
+                "88888888-8888-8888-8888-888888888863", "99999999-9999-9999-9999-999999999863");
+
+        assertTrue(planner.planNextStep(invocation(), snapshot(List.of(first, middleware)), 1).isEmpty());
     }
 
     @Test

@@ -1,5 +1,6 @@
 package com.funchole.backend.gateway.server;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.funchole.backend.gateway.GatewayRegistry;
 import com.funchole.backend.gateway.GatewayRequestContext;
@@ -9,6 +10,7 @@ import com.funchole.backend.gateway.flow.FlowResolver;
 import com.funchole.backend.invocation.CreateInvocationRequest;
 import com.funchole.backend.invocation.Invocation;
 import com.funchole.backend.invocation.InvocationRegistry;
+import com.funchole.backend.invocation.InvocationStatus;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandler;
@@ -23,6 +25,7 @@ import io.netty.handler.codec.http.HttpVersion;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -34,17 +37,20 @@ public final class GatewayHttpHandler extends SimpleChannelInboundHandler<FullHt
     private final GatewayRegistry gatewayRegistry;
     private final FlowResolver flowResolver;
     private final InvocationRegistry invocationRegistry;
+    private final PendingInvocationResponseRegistry pendingResponseRegistry;
 
     public GatewayHttpHandler(
             ObjectMapper objectMapper,
             GatewayRegistry gatewayRegistry,
             FlowResolver flowResolver,
-            InvocationRegistry invocationRegistry
+            InvocationRegistry invocationRegistry,
+            PendingInvocationResponseRegistry pendingResponseRegistry
     ) {
         this.objectMapper = objectMapper;
         this.gatewayRegistry = gatewayRegistry;
         this.flowResolver = flowResolver;
         this.invocationRegistry = invocationRegistry;
+        this.pendingResponseRegistry = pendingResponseRegistry;
     }
 
     @Override
@@ -129,16 +135,92 @@ public final class GatewayHttpHandler extends SimpleChannelInboundHandler<FullHt
                 requestContext.path()
         );
 
-        writeJson(context, HttpResponseStatus.ACCEPTED, Map.of(
-                "success", true,
-                "message", "Invocation created",
-                "data", Map.of(
-                        "invocationId", invocation.invocationId().toString(),
-                        "flowKey", invocation.flowKey(),
-                        "flowVersionId", invocation.flowVersionId().toString(),
-                        "status", invocation.status().name()
-                )
+        UUID invocationId = invocation.invocationId();
+        context.channel().closeFuture().addListener(future -> pendingResponseRegistry.cancel(invocationId));
+        pendingResponseRegistry.register(invocationId, outcome -> {
+            switch (outcome) {
+                case COMPLETED -> completeInvocationResponse(context, invocationId);
+                case TIMED_OUT -> writeTimeoutResponse(context, invocationId);
+            }
+        });
+    }
+
+    /**
+     * Runs on whatever thread resolved the pending entry (the NATS listener
+     * thread for a real completion, this handler's own timeout executor for
+     * a timeout) - so the actual write is always dispatched onto the
+     * channel's own event loop rather than touching Netty state directly
+     * from a foreign thread.
+     */
+    private void completeInvocationResponse(ChannelHandlerContext context, UUID invocationId) {
+        context.channel().eventLoop().execute(() -> {
+            Optional<Invocation> invocation = invocationRegistry.findById(invocationId);
+            if (invocation.isEmpty()) {
+                writeJson(context, HttpResponseStatus.INTERNAL_SERVER_ERROR, Map.of(
+                        "success", false,
+                        "message", "Invocation not found after completion",
+                        "invocationId", invocationId.toString()
+                ));
+                return;
+            }
+            writeInvocationOutcome(context, invocation.get());
+        });
+    }
+
+    private void writeTimeoutResponse(ChannelHandlerContext context, UUID invocationId) {
+        context.channel().eventLoop().execute(() -> writeJson(context, HttpResponseStatus.GATEWAY_TIMEOUT, Map.of(
+                "success", false,
+                "message", "Timed out waiting for invocation completion",
+                "invocationId", invocationId.toString()
+        )));
+    }
+
+    private void writeInvocationOutcome(ChannelHandlerContext context, Invocation invocation) {
+        if (invocation.status() == InvocationStatus.COMPLETED) {
+            writeFinalResponse(context, invocation);
+            return;
+        }
+        if (invocation.status() == InvocationStatus.FAILED) {
+            writeJson(context, HttpResponseStatus.INTERNAL_SERVER_ERROR, Map.of(
+                    "success", false,
+                    "message", "Invocation failed",
+                    "invocationId", invocation.invocationId().toString()
+            ));
+            return;
+        }
+        // Defensive: the completion event fired but the durable read still shows a
+        // non-terminal status (e.g. a duplicate/out-of-order notification races a
+        // read). Treat it the same as a failure rather than guessing at a body.
+        writeJson(context, HttpResponseStatus.INTERNAL_SERVER_ERROR, Map.of(
+                "success", false,
+                "message", "Invocation did not reach a terminal state",
+                "invocationId", invocation.invocationId().toString()
         ));
+    }
+
+    /**
+     * Builds the client-facing HTTP response from the durable RESPONSE step
+     * output persisted on the Invocation: {"status": &lt;int&gt;, "body": &lt;any&gt;}.
+     */
+    private void writeFinalResponse(ChannelHandlerContext context, Invocation invocation) {
+        try {
+            JsonNode responseNode = invocation.result() == null ? null : objectMapper.readTree(invocation.result());
+            int status = responseNode != null && responseNode.hasNonNull("status")
+                    ? responseNode.get("status").asInt(200)
+                    : 200;
+            JsonNode body = responseNode != null ? responseNode.get("body") : null;
+            byte[] responseBody = objectMapper.writeValueAsBytes(body == null ? objectMapper.nullNode() : body);
+            FullHttpResponse response = new DefaultFullHttpResponse(
+                    HttpVersion.HTTP_1_1,
+                    HttpResponseStatus.valueOf(status),
+                    Unpooled.wrappedBuffer(responseBody)
+            );
+            response.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/json");
+            response.headers().setInt(HttpHeaderNames.CONTENT_LENGTH, responseBody.length);
+            context.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
+        } catch (Exception exception) {
+            writeText(context, HttpResponseStatus.INTERNAL_SERVER_ERROR, "Failed to build final response: " + exception.getMessage());
+        }
     }
 
     @Override
@@ -187,8 +269,14 @@ public final class GatewayHttpHandler extends SimpleChannelInboundHandler<FullHt
         ));
     }
 
-    private void writeJson(ChannelHandlerContext context, HttpResponseStatus status, Object payload) throws Exception {
-        byte[] responseBody = objectMapper.writeValueAsBytes(payload);
+    private void writeJson(ChannelHandlerContext context, HttpResponseStatus status, Object payload) {
+        byte[] responseBody;
+        try {
+            responseBody = objectMapper.writeValueAsBytes(payload);
+        } catch (Exception exception) {
+            writeText(context, HttpResponseStatus.INTERNAL_SERVER_ERROR, "Gateway failed to serialize response: " + exception.getMessage());
+            return;
+        }
         FullHttpResponse response = new DefaultFullHttpResponse(
                 HttpVersion.HTTP_1_1,
                 status,

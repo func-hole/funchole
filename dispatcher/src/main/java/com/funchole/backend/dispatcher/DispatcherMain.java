@@ -2,6 +2,7 @@ package com.funchole.backend.dispatcher;
 
 import com.funchole.backend.invocation.InvocationMessagingConfig;
 import com.funchole.backend.invocation.JdbcInvocationRegistry;
+import com.funchole.backend.invocation.NatsJetStreamInvocationEventPublisher;
 import com.funchole.backend.runtimeregistry.InMemoryRuntimeRegistry;
 import com.funchole.backend.runtimeregistry.RuntimeInstance;
 import com.funchole.backend.runtimeregistry.RuntimeInstanceStatus;
@@ -29,7 +30,7 @@ public final class DispatcherMain {
         );
         InvocationDispatcher dispatcher = new InvocationDispatcher(
                 natsConnection,
-                new JdbcInvocationRegistry(dataSource),
+                new JdbcInvocationRegistry(dataSource, new NatsJetStreamInvocationEventPublisher(natsConnection)),
                 new JdbcInvocationStepExecutionRegistry(dataSource),
                 createRuntimeRegistry(),
                 new ExecutionPlanner(),

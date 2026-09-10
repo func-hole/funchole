@@ -11,7 +11,10 @@ public record Invocation(
         InvocationStatus status,
         String inputPayload,
         String dependencySnapshot,
+        String result,
+        String error,
         OffsetDateTime createdAt,
-        OffsetDateTime updatedAt
+        OffsetDateTime updatedAt,
+        OffsetDateTime completedAt
 ) {
 }

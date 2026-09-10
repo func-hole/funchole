@@ -2,19 +2,25 @@ package com.funchole.backend.dispatcher;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.funchole.backend.invocation.CreateInvocationRequest;
 import com.funchole.backend.invocation.Invocation;
 import com.funchole.backend.invocation.InvocationMessagingConfig;
 import com.funchole.backend.invocation.InvocationRegistry;
 import com.funchole.backend.invocation.InvocationSnapshot;
 import com.funchole.backend.invocation.InvocationStatus;
+import com.funchole.backend.invocation.InvocationTransition;
 import com.funchole.backend.invocation.JdbcInvocationRegistry;
 import com.funchole.backend.invocation.NatsJetStreamInvocationEventPublisher;
 import com.funchole.backend.runtimeregistry.InMemoryRuntimeRegistry;
 import com.funchole.backend.runtimeregistry.RuntimeInstance;
 import com.funchole.backend.runtimeregistry.RuntimeInstanceStatus;
+import com.funchole.backend.runtimeregistry.RuntimeRegistry;
+import com.funchole.backend.runtimeregistry.RuntimeRequirement;
 import com.funchole.backend.runtimeregistry.RuntimeTarget;
 import io.nats.client.Connection;
 import io.nats.client.Nats;
@@ -49,6 +55,7 @@ class InvocationDispatcherTest {
             .withCommand("-js", "-sd", "/tmp/nats/jetstream");
 
     private static final String DEV_RUNTIME_INSTANCE_ID = "runtime-node-dev-1";
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private Connection natsConnection;
     private JdbcInvocationRegistry invocationRegistry;
@@ -124,8 +131,11 @@ class InvocationDispatcherTest {
                         status VARCHAR(100) not null,
                         input_payload JSONB,
                         dependency_snapshot JSONB,
+                        result JSONB,
+                        error JSONB,
                         created_at TIMESTAMP WITH TIME ZONE not null default CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP WITH TIME ZONE not null default CURRENT_TIMESTAMP
+                        updated_at TIMESTAMP WITH TIME ZONE not null default CURRENT_TIMESTAMP,
+                        completed_at TIMESTAMP WITH TIME ZONE
                     )
                     """);
             statement.execute("drop table if exists invocation_step_executions");
@@ -308,13 +318,32 @@ class InvocationDispatcherTest {
         assertEquals(firstComponentVersionId, execution.componentVersionId());
         assertEquals("NODE", execution.runtimeType());
 
-        // Sequential progression: FUNCTION step 2 was dispatched and completed
-        // with the first step's result as its input; the RESPONSE step at
-        // position 3 stops progression.
+        // Full synchronous flow: FUNCTION step 2 is dispatched and completed
+        // with the first step's result as its input, then the RESPONSE step
+        // at position 3 executes inline (no runtime capacity) and the
+        // Invocation reaches COMPLETED with the RESPONSE step's output.
         awaitCondition(() -> runtimeRegistry.find(DEV_RUNTIME_INSTANCE_ID).orElseThrow().inFlight() == 0, Duration.ofSeconds(5));
-        awaitCondition(() -> countStepExecutionsUnchecked() == 2, Duration.ofSeconds(5));
-        assertEquals(2, countStepExecutions());
+        awaitCondition(() -> countStepExecutionsUnchecked() == 3, Duration.ofSeconds(5));
+        assertEquals(3, countStepExecutions());
         assertEquals(0, runtimeRegistry.find(DEV_RUNTIME_INSTANCE_ID).orElseThrow().inFlight());
+
+        awaitCondition(
+                () -> invocationRegistry.findById(invocation.invocationId()).orElseThrow().status() == InvocationStatus.COMPLETED,
+                Duration.ofSeconds(5)
+        );
+        Invocation completedInvocation = invocationRegistry.findById(invocation.invocationId()).orElseThrow();
+        assertEquals(InvocationStatus.COMPLETED, completedInvocation.status());
+        assertNotNull(completedInvocation.completedAt());
+
+        InvocationStepExecution secondExecution = stepExecutionAtPosition(flowVersionId, 2).orElseThrow();
+        InvocationStepExecution responseExecution = stepExecutionAtPosition(flowVersionId, 3).orElseThrow();
+        assertEquals(InvocationStepExecutionStatus.COMPLETED, responseExecution.status());
+        assertEquals("RESPONSE", responseExecution.componentType());
+        assertJsonEquals(responseExecution.result(), completedInvocation.result());
+
+        JsonNode responseNode = OBJECT_MAPPER.readTree(completedInvocation.result());
+        assertEquals(200, responseNode.at("/status").asInt());
+        assertJsonEquals(secondExecution.result(), OBJECT_MAPPER.writeValueAsString(responseNode.at("/body")));
     }
 
     @Test
@@ -468,7 +497,11 @@ class InvocationDispatcherTest {
 
         assertTrue(dispatcher.processNext(Duration.ofSeconds(5)));
 
-        awaitCondition(() -> countStepExecutionsUnchecked() == 2, Duration.ofSeconds(5));
+        // Waits for the RESPONSE step (position 3) too, since it now completes the
+        // flow - polling for only 2 rows would spuriously pass the instant the
+        // transient FUNCTION-only state is observed, without proving progression
+        // actually settled.
+        awaitCondition(() -> countStepExecutionsUnchecked() == 3, Duration.ofSeconds(5));
         awaitCondition(() -> singleCapacityRegistry.find("runtime-node-single").orElseThrow().inFlight() == 0,
                 Duration.ofSeconds(5));
 
@@ -520,6 +553,115 @@ class InvocationDispatcherTest {
         InvocationStepExecution failed = firstStepExecution().orElseThrow();
         assertEquals(InvocationStepExecutionStatus.FAILED, failed.status());
         assertEquals(invocation.invocationId(), failed.invocationId());
+
+        awaitCondition(
+                () -> invocationRegistry.findById(invocation.invocationId()).orElseThrow().status() == InvocationStatus.FAILED,
+                Duration.ofSeconds(5)
+        );
+        Invocation failedInvocation = invocationRegistry.findById(invocation.invocationId()).orElseThrow();
+        assertEquals(InvocationStatus.FAILED, failedInvocation.status());
+        assertNotNull(failedInvocation.completedAt());
+        assertEquals(null, failedInvocation.result());
+    }
+
+    @Test
+    void firstStepReceivesInvocationInputRegardlessOfItsNumericPosition() throws Exception {
+        // A valid Flow may use non-contiguous positions like 10/20/30; the
+        // Dispatcher must not infer "first step" from position == 1.
+        UUID flowId = UUID.fromString("10000000-0000-0000-0000-000000000271");
+        UUID flowVersionId = UUID.fromString("20000000-0000-0000-0000-000000000271");
+        UUID firstComponentId = UUID.fromString("30000000-0000-0000-0000-000000000271");
+        UUID firstComponentVersionId = UUID.fromString("40000000-0000-0000-0000-000000000271");
+        insertFlow(flowId, "flw_orders_list", flowVersionId, 1);
+        insertStep(flowVersionId, "validate-orders-request", "FUNCTION", 10, firstComponentId, firstComponentVersionId);
+        insertStep(flowVersionId, "fetch-orders", "FUNCTION", 20,
+                UUID.fromString("30000000-0000-0000-0000-000000000272"),
+                UUID.fromString("40000000-0000-0000-0000-000000000272"));
+        insertStep(flowVersionId, "build-orders-response", "RESPONSE", 30,
+                UUID.fromString("30000000-0000-0000-0000-000000000273"),
+                UUID.fromString("40000000-0000-0000-0000-000000000273"));
+        Invocation invocation = invocationRegistry.create(new CreateInvocationRequest(
+                flowId, "flw_orders_list", flowVersionId, "{\"path\":\"/orders\",\"marker\":\"first-step-input\"}"
+        ));
+        CapturingRuntimeExecutionGateway gateway = new CapturingRuntimeExecutionGateway();
+        InvocationDispatcher dispatcher = new InvocationDispatcher(
+                natsConnection, invocationRegistry, stepExecutionRegistry, runtimeRegistry,
+                new ExecutionPlanner(), gateway
+        );
+
+        assertTrue(dispatcher.processNext(Duration.ofSeconds(5)));
+
+        RuntimeExecutionRequest firstRequest = gateway.capturedRequest();
+        assertEquals(firstComponentId, firstRequest.componentId());
+        assertEquals(firstComponentVersionId, firstRequest.componentVersionId());
+        assertJsonEquals(invocation.inputPayload(), firstRequest.input());
+    }
+
+    @Test
+    void responseStepDoesNotReserveRuntimeCapacity() throws Exception {
+        UUID flowId = UUID.fromString("10000000-0000-0000-0000-000000000281");
+        UUID flowVersionId = UUID.fromString("20000000-0000-0000-0000-000000000281");
+        insertFlow(flowId, "flw_orders_list", flowVersionId, 1);
+        insertStep(flowVersionId, "validate-orders-request", "FUNCTION", 1,
+                UUID.fromString("30000000-0000-0000-0000-000000000281"),
+                UUID.fromString("40000000-0000-0000-0000-000000000281"));
+        insertStep(flowVersionId, "build-orders-response", "RESPONSE", 2,
+                UUID.fromString("30000000-0000-0000-0000-000000000282"),
+                UUID.fromString("40000000-0000-0000-0000-000000000282"));
+        Invocation invocation = invocationRegistry.create(new CreateInvocationRequest(
+                flowId, "flw_orders_list", flowVersionId, "{\"path\":\"/orders\"}"
+        ));
+        CountingRuntimeRegistry countingRuntimeRegistry = new CountingRuntimeRegistry(runtimeRegistry);
+        InvocationDispatcher dispatcher = new InvocationDispatcher(
+                natsConnection, invocationRegistry, stepExecutionRegistry, countingRuntimeRegistry
+        );
+
+        assertTrue(dispatcher.processNext(Duration.ofSeconds(5)));
+
+        awaitCondition(
+                () -> invocationRegistry.findById(invocation.invocationId()).orElseThrow().status() == InvocationStatus.COMPLETED,
+                Duration.ofSeconds(5)
+        );
+        assertEquals(2, countStepExecutions());
+        // Exactly one reservation: the FUNCTION step. The RESPONSE step that
+        // followed and completed the Invocation never touched the registry.
+        assertEquals(1, countingRuntimeRegistry.selectAndReserveCallCount());
+        assertEquals(1, countingRuntimeRegistry.releaseCallCount());
+    }
+
+    @Test
+    void completionEventIsPublishedOnlyAfterDurablePersistence() throws Exception {
+        UUID flowId = UUID.fromString("10000000-0000-0000-0000-000000000291");
+        UUID flowVersionId = UUID.fromString("20000000-0000-0000-0000-000000000291");
+        insertFlow(flowId, "flw_orders_list", flowVersionId, 1);
+        insertStep(flowVersionId, "validate-orders-request", "FUNCTION", 1,
+                UUID.fromString("30000000-0000-0000-0000-000000000291"),
+                UUID.fromString("40000000-0000-0000-0000-000000000291"));
+        insertStep(flowVersionId, "build-orders-response", "RESPONSE", 2,
+                UUID.fromString("30000000-0000-0000-0000-000000000292"),
+                UUID.fromString("40000000-0000-0000-0000-000000000292"));
+        Invocation invocation = invocationRegistry.create(new CreateInvocationRequest(
+                flowId, "flw_orders_list", flowVersionId, "{\"path\":\"/orders\"}"
+        ));
+        io.nats.client.Subscription terminalSubscription =
+                natsConnection.subscribe(InvocationMessagingConfig.INVOCATION_TERMINAL_SUBJECT);
+        natsConnection.flush(Duration.ofSeconds(5));
+        InvocationDispatcher dispatcher = new InvocationDispatcher(
+                natsConnection, invocationRegistry, stepExecutionRegistry, runtimeRegistry
+        );
+
+        assertTrue(dispatcher.processNext(Duration.ofSeconds(5)));
+
+        io.nats.client.Message terminalMessage = terminalSubscription.nextMessage(Duration.ofSeconds(5));
+        assertNotNull(terminalMessage, "Expected an INVOCATION_COMPLETED event to be published");
+        var event = OBJECT_MAPPER.readTree(terminalMessage.getData());
+        assertEquals("INVOCATION_COMPLETED", event.at("/eventType").asText());
+        assertEquals(invocation.invocationId().toString(), event.at("/invocationId").asText());
+
+        // The event only arrives after persistence completed, so the durable
+        // read must already show COMPLETED by the time it's observed here.
+        Invocation persisted = invocationRegistry.findById(invocation.invocationId()).orElseThrow();
+        assertEquals(InvocationStatus.COMPLETED, persisted.status());
     }
 
     @Test
@@ -544,7 +686,7 @@ class InvocationDispatcherTest {
         );
 
         assertTrue(dispatcher.processNext(Duration.ofSeconds(5)));
-        awaitCondition(() -> countStepExecutionsUnchecked() == 2, Duration.ofSeconds(5));
+        awaitCondition(() -> countStepExecutionsUnchecked() == 3, Duration.ofSeconds(5));
 
         InvocationStepExecution firstExecution =
                 stepExecutionRegistry.findById(gateway.requests().get(0).executionId()).orElseThrow();
@@ -555,7 +697,7 @@ class InvocationDispatcherTest {
                 );
 
         assertFalse(duplicate.transitioned());
-        assertEquals(2, countStepExecutions());
+        assertEquals(3, countStepExecutions());
     }
 
     @Test
@@ -878,6 +1020,25 @@ class InvocationDispatcherTest {
         throw new AssertionError("Condition not met within " + timeout);
     }
 
+    private void assertJsonEquals(String expected, String actual) throws Exception {
+        assertEquals(OBJECT_MAPPER.readTree(expected), OBJECT_MAPPER.readTree(actual));
+    }
+
+    private java.util.Optional<InvocationStepExecution> stepExecutionAtPosition(UUID flowVersionId, int position) throws Exception {
+        try (
+                var connection = dataSource().getConnection();
+                Statement statement = connection.createStatement();
+                var resultSet = statement.executeQuery(
+                        "select id from invocation_step_executions where flow_version_id = '"
+                                + flowVersionId + "' and position = " + position)
+        ) {
+            if (resultSet.next()) {
+                return stepExecutionRegistry.findById(java.util.UUID.fromString(resultSet.getString(1)));
+            }
+            return java.util.Optional.empty();
+        }
+    }
+
     private java.util.Optional<InvocationStepExecution> firstStepExecution() throws Exception {
         try (
                 var connection = dataSource().getConnection();
@@ -921,6 +1082,16 @@ class InvocationDispatcherTest {
         @Override
         public Optional<Invocation> findById(UUID invocationId) {
             return Optional.empty();
+        }
+
+        @Override
+        public InvocationTransition markCompleted(UUID invocationId, String result) {
+            throw new UnsupportedOperationException("not used");
+        }
+
+        @Override
+        public InvocationTransition markFailed(UUID invocationId, String error) {
+            throw new UnsupportedOperationException("not used");
         }
     }
 
@@ -998,6 +1169,52 @@ class InvocationDispatcherTest {
         public InvocationStepExecutionTransition markFailed(UUID executionId, RuntimeExecutionResult result) {
             terminalAttemptCount.incrementAndGet();
             throw new IllegalStateException("Simulated terminal persistence failure");
+        }
+    }
+
+    private static final class CountingRuntimeRegistry implements RuntimeRegistry {
+
+        private final RuntimeRegistry delegate;
+        private final java.util.concurrent.atomic.AtomicInteger selectAndReserveCallCount = new java.util.concurrent.atomic.AtomicInteger();
+        private final java.util.concurrent.atomic.AtomicInteger releaseCallCount = new java.util.concurrent.atomic.AtomicInteger();
+
+        private CountingRuntimeRegistry(RuntimeRegistry delegate) {
+            this.delegate = delegate;
+        }
+
+        int selectAndReserveCallCount() {
+            return selectAndReserveCallCount.get();
+        }
+
+        int releaseCallCount() {
+            return releaseCallCount.get();
+        }
+
+        @Override
+        public void register(RuntimeInstance runtimeInstance) {
+            delegate.register(runtimeInstance);
+        }
+
+        @Override
+        public void unregister(String runtimeInstanceId) {
+            delegate.unregister(runtimeInstanceId);
+        }
+
+        @Override
+        public RuntimeTarget selectAndReserve(RuntimeRequirement requirement) {
+            selectAndReserveCallCount.incrementAndGet();
+            return delegate.selectAndReserve(requirement);
+        }
+
+        @Override
+        public void release(String runtimeInstanceId) {
+            releaseCallCount.incrementAndGet();
+            delegate.release(runtimeInstanceId);
+        }
+
+        @Override
+        public Optional<RuntimeInstance> find(String runtimeInstanceId) {
+            return delegate.find(runtimeInstanceId);
         }
     }
 

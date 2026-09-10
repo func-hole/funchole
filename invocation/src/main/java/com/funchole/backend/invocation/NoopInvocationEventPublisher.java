@@ -5,4 +5,12 @@ public final class NoopInvocationEventPublisher implements InvocationEventPublis
     @Override
     public void publishInvocationReady(Invocation invocation) {
     }
+
+    @Override
+    public void publishInvocationCompleted(Invocation invocation) {
+    }
+
+    @Override
+    public void publishInvocationFailed(Invocation invocation) {
+    }
 }

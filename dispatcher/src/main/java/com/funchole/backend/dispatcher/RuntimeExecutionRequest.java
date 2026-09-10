@@ -1,6 +1,5 @@
 package com.funchole.backend.dispatcher;
 
-import com.funchole.backend.invocation.Invocation;
 import java.util.UUID;
 
 /**
@@ -8,19 +7,15 @@ import java.util.UUID;
  *
  * Everything is derived from the already-pinned Invocation / Step Execution
  * state; no mutable Flow or component tables are consulted. {@code input} is
- * kept as a JSON string so it stays transport neutral for the future IPC
- * protocol.
+ * kept as a JSON string so it stays transport neutral for the IPC protocol.
  *
- * Two factories encode the current minimal input-propagation rule:
- * <ul>
- *   <li>{@link #fromStepExecution(InvocationStepExecution, Invocation)} - for
- *       the flow's first FUNCTION step, the input is the root Invocation
- *       input payload.</li>
- *   <li>{@link #fromNextStepExecution(InvocationStepExecution, String)} - for
- *       any subsequent step, the input is exactly the previous step's stored
- *       result, passed through without transformation (do not transform or
- *       merge it; a mapping engine is a future concern).</li>
- * </ul>
+ * {@code input} is supplied explicitly by the caller rather than inferred
+ * from the step's position: the flow's first step receives the root
+ * Invocation input payload, and every subsequent step receives exactly the
+ * previous step's stored result, passed through without transformation (a
+ * mapping engine is a future concern). Which input applies is a decision the
+ * Dispatcher makes when it dispatches a step - not something this record or
+ * the runtime worker infers from {@code position == 1}.
  */
 public record RuntimeExecutionRequest(
         UUID executionId,
@@ -36,7 +31,7 @@ public record RuntimeExecutionRequest(
         String input
 ) {
 
-    public static RuntimeExecutionRequest fromStepExecution(InvocationStepExecution stepExecution, Invocation invocation) {
+    public static RuntimeExecutionRequest of(InvocationStepExecution stepExecution, String input) {
         return new RuntimeExecutionRequest(
                 stepExecution.id(),
                 stepExecution.invocationId(),
@@ -48,23 +43,7 @@ public record RuntimeExecutionRequest(
                 stepExecution.componentId(),
                 stepExecution.componentVersionId(),
                 stepExecution.runtimeType(),
-                invocation.inputPayload()
-        );
-    }
-
-    public static RuntimeExecutionRequest fromNextStepExecution(InvocationStepExecution stepExecution, String previousResult) {
-        return new RuntimeExecutionRequest(
-                stepExecution.id(),
-                stepExecution.invocationId(),
-                stepExecution.flowId(),
-                stepExecution.flowVersionId(),
-                stepExecution.stepId(),
-                stepExecution.attempt(),
-                stepExecution.componentType(),
-                stepExecution.componentId(),
-                stepExecution.componentVersionId(),
-                stepExecution.runtimeType(),
-                previousResult
+                input
         );
     }
 }

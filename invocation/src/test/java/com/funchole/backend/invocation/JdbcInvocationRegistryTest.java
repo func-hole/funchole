@@ -119,8 +119,11 @@ class JdbcInvocationRegistryTest {
                         status VARCHAR(100) not null,
                         input_payload JSONB,
                         dependency_snapshot JSONB,
+                        result JSONB,
+                        error JSONB,
                         created_at TIMESTAMP WITH TIME ZONE not null default CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP WITH TIME ZONE not null default CURRENT_TIMESTAMP
+                        updated_at TIMESTAMP WITH TIME ZONE not null default CURRENT_TIMESTAMP,
+                        completed_at TIMESTAMP WITH TIME ZONE
                     )
                     """);
         }
@@ -375,6 +378,46 @@ class JdbcInvocationRegistryTest {
         assertEquals(0, countInvocations());
     }
 
+    @Test
+    void marksInvocationCompletedAndPublishesExactlyOnce() throws Exception {
+        UUID flowId = UUID.fromString("10000000-0000-0000-0000-000000000051");
+        UUID flowVersionId = UUID.fromString("20000000-0000-0000-0000-000000000051");
+        insertFlow(flowId, "flw_terminal_completed", flowVersionId, 1);
+        Invocation invocation = registry.create(new CreateInvocationRequest(flowId, "flw_terminal_completed", flowVersionId, "{}"));
+
+        InvocationTransition first = registry.markCompleted(invocation.invocationId(), "{\"status\":200,\"body\":{\"ok\":true}}");
+        InvocationTransition second = registry.markCompleted(invocation.invocationId(), "{\"status\":200,\"body\":{\"ok\":true}}");
+
+        assertTrue(first.transitioned());
+        assertFalse(second.transitioned());
+        assertEquals(InvocationStatus.COMPLETED, first.invocation().status());
+        assertJsonEquals("{\"status\":200,\"body\":{\"ok\":true}}", first.invocation().result());
+        assertNotNull(first.invocation().completedAt());
+        assertEquals(1, eventPublisher.publishedCompleted.size());
+        assertEquals(invocation.invocationId(), eventPublisher.publishedCompleted.getFirst().invocationId());
+
+        Invocation retrieved = registry.findById(invocation.invocationId()).orElseThrow();
+        assertEquals(InvocationStatus.COMPLETED, retrieved.status());
+    }
+
+    @Test
+    void marksInvocationFailedAndPublishesExactlyOnce() throws Exception {
+        UUID flowId = UUID.fromString("10000000-0000-0000-0000-000000000052");
+        UUID flowVersionId = UUID.fromString("20000000-0000-0000-0000-000000000052");
+        insertFlow(flowId, "flw_terminal_failed", flowVersionId, 1);
+        Invocation invocation = registry.create(new CreateInvocationRequest(flowId, "flw_terminal_failed", flowVersionId, "{}"));
+
+        InvocationTransition first = registry.markFailed(invocation.invocationId(), "{\"code\":\"ARTIFACT_EXECUTION_ERROR\",\"message\":\"boom\"}");
+        InvocationTransition second = registry.markFailed(invocation.invocationId(), "{\"code\":\"ARTIFACT_EXECUTION_ERROR\",\"message\":\"boom\"}");
+
+        assertTrue(first.transitioned());
+        assertFalse(second.transitioned());
+        assertEquals(InvocationStatus.FAILED, first.invocation().status());
+        assertEquals(1, eventPublisher.publishedFailed.size());
+        assertEquals(invocation.invocationId(), eventPublisher.publishedFailed.getFirst().invocationId());
+        assertTrue(eventPublisher.publishedCompleted.isEmpty());
+    }
+
     private DataSource dataSource() {
         PGSimpleDataSource dataSource = new PGSimpleDataSource();
         dataSource.setURL(postgres.getJdbcUrl());
@@ -565,10 +608,22 @@ class JdbcInvocationRegistryTest {
 
     private static final class CapturingInvocationEventPublisher implements InvocationEventPublisher {
         private final List<Invocation> published = new ArrayList<>();
+        private final List<Invocation> publishedCompleted = new ArrayList<>();
+        private final List<Invocation> publishedFailed = new ArrayList<>();
 
         @Override
         public void publishInvocationReady(Invocation invocation) {
             published.add(invocation);
+        }
+
+        @Override
+        public void publishInvocationCompleted(Invocation invocation) {
+            publishedCompleted.add(invocation);
+        }
+
+        @Override
+        public void publishInvocationFailed(Invocation invocation) {
+            publishedFailed.add(invocation);
         }
     }
 }

@@ -4,13 +4,16 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.funchole.backend.gateway.flow.FlowResolver;
 import com.funchole.backend.gateway.flow.SnapshotFlowResolver;
 import com.funchole.backend.gateway.server.GatewayHttpHandler;
+import com.funchole.backend.gateway.server.GatewayInvocationCompletionListener;
 import com.funchole.backend.gateway.server.GatewayServer;
+import com.funchole.backend.gateway.server.PendingInvocationResponseRegistry;
 import com.funchole.backend.invocation.JdbcInvocationRegistry;
 import com.funchole.backend.invocation.NatsJetStreamInvocationEventPublisher;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import io.nats.client.Connection;
 import io.nats.client.Nats;
+import java.time.Duration;
 import javax.sql.DataSource;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -36,11 +39,21 @@ public final class GatewayMain {
         GatewayRegistryLoader gatewayRegistryLoader = new GatewayRegistryLoader(dataSource, certificateLoader);
         GatewayRegistry gatewayRegistry = new GatewayRegistry(loadGatewayRegistry(gatewayRegistryLoader));
         FlowResolver flowResolver = new SnapshotFlowResolver(gatewayRegistry);
+        JdbcInvocationRegistry invocationRegistry =
+                new JdbcInvocationRegistry(dataSource, new NatsJetStreamInvocationEventPublisher(natsConnection));
+        ScheduledExecutorService invocationTimeoutExecutor = createInvocationTimeoutExecutor();
+        PendingInvocationResponseRegistry pendingResponseRegistry = new PendingInvocationResponseRegistry(
+                invocationTimeoutExecutor,
+                Duration.ofMillis(readInt("GATEWAY_INVOCATION_TIMEOUT_MS", 15000))
+        );
+        GatewayInvocationCompletionListener completionListener =
+                new GatewayInvocationCompletionListener(natsConnection, pendingResponseRegistry);
         GatewayHttpHandler gatewayHttpHandler = new GatewayHttpHandler(
                 objectMapper,
                 gatewayRegistry,
                 flowResolver,
-                new JdbcInvocationRegistry(dataSource, new NatsJetStreamInvocationEventPublisher(natsConnection))
+                invocationRegistry,
+                pendingResponseRegistry
         );
         GatewayServer gatewayServer = new GatewayServer(port, gatewayRegistry, gatewayHttpHandler);
         ScheduledExecutorService registryRefreshExecutor = createRegistryRefreshExecutor();
@@ -48,7 +61,9 @@ public final class GatewayMain {
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             gatewayServer.close();
+            completionListener.close();
             registryRefreshExecutor.shutdownNow();
+            invocationTimeoutExecutor.shutdownNow();
             if (dataSource instanceof HikariDataSource hikariDataSource) {
                 hikariDataSource.close();
             }
@@ -98,6 +113,14 @@ public final class GatewayMain {
     private static ScheduledExecutorService createRegistryRefreshExecutor() {
         return Executors.newSingleThreadScheduledExecutor(runnable -> {
             Thread thread = new Thread(runnable, "gateway-registry-poller");
+            thread.setDaemon(true);
+            return thread;
+        });
+    }
+
+    private static ScheduledExecutorService createInvocationTimeoutExecutor() {
+        return Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "gateway-invocation-timeout");
             thread.setDaemon(true);
             return thread;
         });
