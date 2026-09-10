@@ -8,6 +8,8 @@ import com.funchole.backend.invocation.CreateInvocationRequest;
 import com.funchole.backend.invocation.Invocation;
 import com.funchole.backend.invocation.InvocationMessagingConfig;
 import com.funchole.backend.invocation.InvocationRegistry;
+import com.funchole.backend.invocation.InvocationSnapshot;
+import com.funchole.backend.invocation.InvocationStatus;
 import com.funchole.backend.invocation.JdbcInvocationRegistry;
 import com.funchole.backend.invocation.NatsJetStreamInvocationEventPublisher;
 import io.nats.client.Connection;
@@ -206,6 +208,78 @@ class InvocationDispatcherTest {
         assertFalse(dispatcher.processNext(Duration.ofSeconds(5)));
     }
 
+    @Test
+    void plansFirstDispatchableStepAndAcks() throws Exception {
+        UUID flowId = UUID.fromString("10000000-0000-0000-0000-000000000121");
+        UUID flowVersionId = UUID.fromString("20000000-0000-0000-0000-000000000121");
+        UUID firstComponentId = UUID.fromString("30000000-0000-0000-0000-000000000121");
+        UUID firstComponentVersionId = UUID.fromString("40000000-0000-0000-0000-000000000121");
+        insertFlow(flowId, "flw_orders_list", flowVersionId, 1);
+        insertStep(flowVersionId, "validate-orders-request", "FUNCTION", 1, firstComponentId, firstComponentVersionId);
+        insertStep(
+                flowVersionId,
+                "fetch-orders",
+                "FUNCTION",
+                2,
+                UUID.fromString("30000000-0000-0000-0000-000000000122"),
+                UUID.fromString("40000000-0000-0000-0000-000000000122")
+        );
+        insertStep(
+                flowVersionId,
+                "build-orders-response",
+                "FUNCTION",
+                3,
+                UUID.fromString("30000000-0000-0000-0000-000000000123"),
+                UUID.fromString("40000000-0000-0000-0000-000000000123")
+        );
+        Invocation invocation = invocationRegistry.create(new CreateInvocationRequest(
+                flowId,
+                "flw_orders_list",
+                flowVersionId,
+                "{\"path\":\"/orders\"}"
+        ));
+        RecordingExecutionPlanner planner = new RecordingExecutionPlanner();
+        InvocationDispatcher dispatcher = new InvocationDispatcher(natsConnection, invocationRegistry, planner);
+
+        assertTrue(dispatcher.processNext(Duration.ofSeconds(5)));
+
+        assertTrue(planner.planned());
+        DispatchableStep step = planner.plannedStep();
+        assertEquals(invocation.invocationId(), step.invocationId());
+        assertEquals(flowId, step.flowId());
+        assertEquals(flowVersionId, step.flowVersionId());
+        assertEquals(1, step.position());
+        assertEquals("FUNCTION", step.componentType());
+        assertEquals(firstComponentId, step.componentId());
+        assertEquals(firstComponentVersionId, step.componentVersionId());
+        assertFalse(dispatcher.processNext(Duration.ofMillis(500)));
+    }
+
+    @Test
+    void doesNotAckWhenFirstStepIsNotExecutable() throws Exception {
+        UUID flowId = UUID.fromString("10000000-0000-0000-0000-000000000131");
+        UUID flowVersionId = UUID.fromString("20000000-0000-0000-0000-000000000131");
+        insertFlow(flowId, "flw_middleware_first", flowVersionId, 1);
+        insertStep(
+                flowVersionId,
+                "log-request",
+                "MIDDLEWARE",
+                1,
+                UUID.fromString("30000000-0000-0000-0000-000000000131"),
+                UUID.fromString("40000000-0000-0000-0000-000000000131")
+        );
+        Invocation invocation = invocationRegistry.create(new CreateInvocationRequest(
+                flowId,
+                "flw_middleware_first",
+                flowVersionId,
+                "{\"path\":\"/orders\"}"
+        ));
+        InvocationDispatcher dispatcher = new InvocationDispatcher(natsConnection, invocationRegistry);
+
+        assertFalse(dispatcher.processNext(Duration.ofSeconds(5)));
+        assertEquals(InvocationStatus.PENDING, invocationRegistry.findById(invocation.invocationId()).orElseThrow().status());
+    }
+
     private DataSource dataSource() {
         PGSimpleDataSource dataSource = new PGSimpleDataSource();
         dataSource.setURL(postgres.getJdbcUrl());
@@ -303,6 +377,24 @@ class InvocationDispatcherTest {
         @Override
         public Optional<Invocation> findById(UUID invocationId) {
             return Optional.empty();
+        }
+    }
+
+    private static final class RecordingExecutionPlanner extends ExecutionPlanner {
+        private DispatchableStep plannedStep;
+
+        @Override
+        public DispatchableStep planInitialStep(Invocation invocation, InvocationSnapshot snapshot) {
+            plannedStep = super.planInitialStep(invocation, snapshot);
+            return plannedStep;
+        }
+
+        boolean planned() {
+            return plannedStep != null;
+        }
+
+        DispatchableStep plannedStep() {
+            return plannedStep;
         }
     }
 }

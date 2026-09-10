@@ -30,13 +30,23 @@ public final class InvocationDispatcher {
     private final InvocationRegistry invocationRegistry;
     private final ObjectMapper objectMapper;
     private final InvocationSnapshotValidator snapshotValidator;
+    private final ExecutionPlanner executionPlanner;
     private final JetStreamSubscription subscription;
 
     public InvocationDispatcher(Connection connection, InvocationRegistry invocationRegistry) {
+        this(connection, invocationRegistry, new ExecutionPlanner());
+    }
+
+    InvocationDispatcher(
+            Connection connection,
+            InvocationRegistry invocationRegistry,
+            ExecutionPlanner executionPlanner
+    ) {
         this.connection = connection;
         this.invocationRegistry = invocationRegistry;
         this.objectMapper = new ObjectMapper();
         this.snapshotValidator = new InvocationSnapshotValidator();
+        this.executionPlanner = executionPlanner;
         ensureStream();
         this.subscription = subscribe();
     }
@@ -79,39 +89,19 @@ public final class InvocationDispatcher {
         if (!validationResult.valid()) {
             throw new IllegalStateException("Invocation snapshot is not executable-shaped: " + validationResult.errors());
         }
-        int rootStepCount = snapshot.flows().getFirst().steps().size();
+
+        DispatchableStep dispatchableStep = executionPlanner.planInitialStep(invocation, snapshot);
         logger.info(
-                "Invocation ready for dispatch: invocationId={}, flowKey={}, flowVersionId={}, rootStepCount={}, steps={}",
-                invocation.invocationId(),
+                "Invocation planned: invocationId={}, flowKey={}, stepId={}, stepKey={}, position={}, componentType={}, componentId={}, componentVersionId={}",
+                dispatchableStep.invocationId(),
                 invocation.flowKey(),
-                invocation.flowVersionId(),
-                rootStepCount,
-                describeSteps(snapshot)
+                dispatchableStep.stepId(),
+                dispatchableStep.stepKey(),
+                dispatchableStep.position(),
+                dispatchableStep.componentType(),
+                dispatchableStep.componentId(),
+                dispatchableStep.componentVersionId()
         );
-    }
-
-    private String describeSteps(InvocationSnapshot snapshot) {
-        if (snapshot.flows().isEmpty()) {
-            return "[]";
-        }
-
-        return snapshot.flows().getFirst().steps().stream()
-                .map(step -> step.position() + ":" + displayName(step.metadata(), step.stepKey()) + ":" + step.stepId())
-                .toList()
-                .toString();
-    }
-
-    private String displayName(String metadata, String fallback) {
-        if (metadata == null || metadata.isBlank()) {
-            return fallback;
-        }
-
-        try {
-            String name = objectMapper.readTree(metadata).path("name").asText();
-            return name.isBlank() ? fallback : name;
-        } catch (IOException exception) {
-            return fallback;
-        }
     }
 
     private JetStreamSubscription subscribe() {
