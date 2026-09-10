@@ -69,14 +69,36 @@ services:
         condition: service_healthy
       nats:
         condition: service_started
+      runtime:
+        condition: service_started
     environment:
       NATS_URL: nats://nats:4222
       DB_URL: jdbc:postgresql://db:5432/funchole
       DB_USERNAME: funchole
       DB_PASSWORD: funchole
+      DEV_RUNTIME_INSTANCE_ID: runtime-node-dev-1
+      DEV_RUNTIME_TYPE: NODE
+      DEV_RUNTIME_SOCKET_PATH: /tmp/funchole/runtime-node-dev-1.sock
     volumes:
       - .:/workspace
+      - runtime-sockets:/tmp/funchole
     entrypoint: ["sh", "/workspace/docker/dispatcher-dev-entrypoint.sh"]
+    networks:
+      - funchole-dev-network
+
+  runtime:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev-runtime
+    environment:
+      RUNTIME_INSTANCE_ID: runtime-node-dev-1
+      RUNTIME_TYPE: NODE
+      RUNTIME_WORKER_SOCKET_PATH: /tmp/funchole/runtime-node-dev-1.sock
+    volumes:
+      - .:/workspace
+      - runtime-sockets:/tmp/funchole
+    entrypoint: ["sh", "/workspace/docker/runtime-dev-entrypoint.sh"]
     networks:
       - funchole-dev-network
 
@@ -185,6 +207,7 @@ volumes:
   technitium-dev-data:
   web-node-modules:
   nats-dev-data:
+  runtime-sockets:
 
 networks:
   funchole-dev-network:

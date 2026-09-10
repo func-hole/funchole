@@ -95,7 +95,7 @@ class InMemoryRuntimeExecutionGatewayTest {
         assertEquals(first, gateway.acceptedRequest(first.executionId()).orElseThrow());
     }
     private RuntimeTarget target(String runtimeType) {
-        return new RuntimeTarget("runtime-" + runtimeType.toLowerCase() + "-dev-1", runtimeType);
+        return new RuntimeTarget("runtime-" + runtimeType.toLowerCase() + "-dev-1", runtimeType, "/tmp/test.sock");
     }
 
     private RuntimeExecutionRequest validRequest() {

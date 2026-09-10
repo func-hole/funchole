@@ -62,7 +62,7 @@ public final class InMemoryRuntimeRegistry implements RuntimeRegistry {
         }
 
         selected.inFlight++;
-        return new RuntimeTarget(selected.runtimeInstanceId, selected.runtimeType);
+        return new RuntimeTarget(selected.runtimeInstanceId, selected.runtimeType, selected.socketPath);
     }
 
     @Override
@@ -87,6 +87,7 @@ public final class InMemoryRuntimeRegistry implements RuntimeRegistry {
         private final String runtimeType;
         private final RuntimeInstanceStatus status;
         private final int capacity;
+        private final String socketPath;
         private int inFlight;
 
         private MutableRuntimeInstance(RuntimeInstance runtimeInstance) {
@@ -95,10 +96,11 @@ public final class InMemoryRuntimeRegistry implements RuntimeRegistry {
             this.status = runtimeInstance.status();
             this.capacity = runtimeInstance.capacity();
             this.inFlight = runtimeInstance.inFlight();
+            this.socketPath = runtimeInstance.socketPath();
         }
 
         private RuntimeInstance toSnapshot() {
-            return new RuntimeInstance(runtimeInstanceId, runtimeType, status, capacity, inFlight);
+            return new RuntimeInstance(runtimeInstanceId, runtimeType, status, capacity, inFlight, socketPath);
         }
     }
 }

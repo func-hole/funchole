@@ -11,8 +11,9 @@ import com.funchole.backend.runtimeregistry.RuntimeTarget;
  * does not wait for execution completion and answers only whether the
  * selected target accepted the execution.
  *
- * The in-memory implementation is the first transport; a persistent IPC
- * transport will be another implementation of this boundary later.
+ * {@link InMemoryRuntimeExecutionGateway} remains for tests/dev fakes.
+ * {@link IpcRuntimeExecutionGateway} is the real local transport: a
+ * persistent Unix Domain Socket connection to a Runtime Worker process.
  */
 public interface RuntimeExecutionGateway {
 

@@ -10,8 +10,8 @@ import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import io.nats.client.Connection;
 import io.nats.client.Nats;
-import javax.sql.DataSource;
 import java.time.Duration;
+import javax.sql.DataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -24,15 +24,21 @@ public final class DispatcherMain {
     public static void main(String[] args) throws Exception {
         DataSource dataSource = createDataSource();
         Connection natsConnection = Nats.connect(readString("NATS_URL", "nats://localhost:4222"));
+        IpcRuntimeExecutionGateway executionGateway = new IpcRuntimeExecutionGateway(
+                Duration.ofMillis(readInt("RUNTIME_IPC_ACCEPT_TIMEOUT_MS", 3000))
+        );
         InvocationDispatcher dispatcher = new InvocationDispatcher(
                 natsConnection,
                 new JdbcInvocationRegistry(dataSource),
                 new JdbcInvocationStepExecutionRegistry(dataSource),
-                createRuntimeRegistry()
+                createRuntimeRegistry(),
+                new ExecutionPlanner(),
+                executionGateway
         );
         Duration pollTimeout = Duration.ofMillis(readInt("DISPATCHER_POLL_TIMEOUT_MS", 1000));
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            executionGateway.close();
             try {
                 natsConnection.close();
             } catch (InterruptedException interruptedException) {
@@ -62,7 +68,8 @@ public final class DispatcherMain {
                 readString("DEV_RUNTIME_TYPE", "NODE"),
                 RuntimeInstanceStatus.AVAILABLE,
                 readInt("DEV_RUNTIME_CAPACITY", 4),
-                0
+                0,
+                readString("DEV_RUNTIME_SOCKET_PATH", "/tmp/funchole/runtime-node-dev-1.sock")
         ));
         return runtimeRegistry;
     }

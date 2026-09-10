@@ -157,7 +157,8 @@ class InvocationDispatcherTest {
         );
         stepExecutionRegistry = new JdbcInvocationStepExecutionRegistry(dataSource);
         runtimeRegistry = new InMemoryRuntimeRegistry();
-        runtimeRegistry.register(new RuntimeInstance(DEV_RUNTIME_INSTANCE_ID, "NODE", RuntimeInstanceStatus.AVAILABLE, 4, 0));
+        runtimeRegistry.register(new RuntimeInstance(
+                DEV_RUNTIME_INSTANCE_ID, "NODE", RuntimeInstanceStatus.AVAILABLE, 4, 0, "/tmp/test-dev-runtime.sock"));
     }
 
     @AfterEach
@@ -444,7 +445,7 @@ class InvocationDispatcherTest {
         ));
         InMemoryRuntimeRegistry singleCapacityRegistry = new InMemoryRuntimeRegistry();
         singleCapacityRegistry.register(new RuntimeInstance(
-                "runtime-node-single", "NODE", RuntimeInstanceStatus.AVAILABLE, 1, 0));
+                "runtime-node-single", "NODE", RuntimeInstanceStatus.AVAILABLE, 1, 0, "/tmp/test-single.sock"));
         InvocationDispatcher dispatcher = new InvocationDispatcher(
                 natsConnection, invocationRegistry, stepExecutionRegistry, singleCapacityRegistry,
                 new ExecutionPlanner(), new RejectingRuntimeExecutionGateway()
@@ -477,7 +478,7 @@ class InvocationDispatcherTest {
         ));
         InMemoryRuntimeRegistry singleCapacityRegistry = new InMemoryRuntimeRegistry();
         singleCapacityRegistry.register(new RuntimeInstance(
-                "runtime-node-single", "NODE", RuntimeInstanceStatus.AVAILABLE, 1, 0));
+                "runtime-node-single", "NODE", RuntimeInstanceStatus.AVAILABLE, 1, 0, "/tmp/test-single.sock"));
         InvocationDispatcher dispatcher = new InvocationDispatcher(
                 natsConnection, invocationRegistry, stepExecutionRegistry, singleCapacityRegistry,
                 new ExecutionPlanner(), new ThrowingRuntimeExecutionGateway()
@@ -486,6 +487,75 @@ class InvocationDispatcherTest {
         assertFalse(dispatcher.processNext(Duration.ofSeconds(5)));
 
         assertEquals(0, singleCapacityRegistry.find("runtime-node-single").orElseThrow().inFlight());
+    }
+
+    @Test
+    void realIpcHandoffAcceptsAndRetainsReservationThenAcks() throws Exception {
+        UUID flowId = UUID.fromString("10000000-0000-0000-0000-000000000191");
+        UUID flowVersionId = UUID.fromString("20000000-0000-0000-0000-000000000191");
+        insertFlow(flowId, "flw_orders_list", flowVersionId, 1);
+        insertStep(
+                flowVersionId,
+                "validate-orders-request",
+                "FUNCTION",
+                1,
+                UUID.fromString("30000000-0000-0000-0000-000000000191"),
+                UUID.fromString("40000000-0000-0000-0000-000000000191")
+        );
+        invocationRegistry.create(new CreateInvocationRequest(
+                flowId,
+                "flw_orders_list",
+                flowVersionId,
+                "{\"path\":\"/orders\"}"
+        ));
+        try (FakeIpcWorker worker = FakeIpcWorker.start(); IpcRuntimeExecutionGateway ipcGateway = new IpcRuntimeExecutionGateway(Duration.ofSeconds(2))) {
+            InMemoryRuntimeRegistry ipcRuntimeRegistry = new InMemoryRuntimeRegistry();
+            ipcRuntimeRegistry.register(new RuntimeInstance(
+                    "runtime-node-ipc", "NODE", RuntimeInstanceStatus.AVAILABLE, 1, 0, worker.socketPath()));
+            InvocationDispatcher dispatcher = new InvocationDispatcher(
+                    natsConnection, invocationRegistry, stepExecutionRegistry, ipcRuntimeRegistry,
+                    new ExecutionPlanner(), ipcGateway
+            );
+
+            assertTrue(dispatcher.processNext(Duration.ofSeconds(5)));
+
+            assertEquals(1, ipcRuntimeRegistry.find("runtime-node-ipc").orElseThrow().inFlight());
+            assertEquals(1, worker.receivedExecutionIds().size());
+        }
+    }
+
+    @Test
+    void realIpcHandoffFailureReleasesReservationAndDoesNotAck() throws Exception {
+        UUID flowId = UUID.fromString("10000000-0000-0000-0000-000000000201");
+        UUID flowVersionId = UUID.fromString("20000000-0000-0000-0000-000000000201");
+        insertFlow(flowId, "flw_orders_list", flowVersionId, 1);
+        insertStep(
+                flowVersionId,
+                "validate-orders-request",
+                "FUNCTION",
+                1,
+                UUID.fromString("30000000-0000-0000-0000-000000000201"),
+                UUID.fromString("40000000-0000-0000-0000-000000000201")
+        );
+        invocationRegistry.create(new CreateInvocationRequest(
+                flowId,
+                "flw_orders_list",
+                flowVersionId,
+                "{\"path\":\"/orders\"}"
+        ));
+        try (IpcRuntimeExecutionGateway ipcGateway = new IpcRuntimeExecutionGateway(Duration.ofMillis(300))) {
+            InMemoryRuntimeRegistry ipcRuntimeRegistry = new InMemoryRuntimeRegistry();
+            ipcRuntimeRegistry.register(new RuntimeInstance(
+                    "runtime-node-ipc-down", "NODE", RuntimeInstanceStatus.AVAILABLE, 1, 0, "/tmp/fh-no-worker-here.sock"));
+            InvocationDispatcher dispatcher = new InvocationDispatcher(
+                    natsConnection, invocationRegistry, stepExecutionRegistry, ipcRuntimeRegistry,
+                    new ExecutionPlanner(), ipcGateway
+            );
+
+            assertFalse(dispatcher.processNext(Duration.ofSeconds(5)));
+
+            assertEquals(0, ipcRuntimeRegistry.find("runtime-node-ipc-down").orElseThrow().inFlight());
+        }
     }
 
     private DataSource dataSource() {

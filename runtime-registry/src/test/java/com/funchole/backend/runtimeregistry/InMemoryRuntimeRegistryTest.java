@@ -12,7 +12,7 @@ class InMemoryRuntimeRegistryTest {
 
     @Test
     void registeredRuntimeIsDiscoverableForMatchingRequirement() {
-        registry.register(new RuntimeInstance("runtime-a", "NODE", RuntimeInstanceStatus.AVAILABLE, 4, 0));
+        registry.register(new RuntimeInstance("runtime-a", "NODE", RuntimeInstanceStatus.AVAILABLE, 4, 0, "/tmp/test.sock"));
 
         RuntimeTarget target = registry.selectAndReserve(new RuntimeRequirement("NODE"));
 
@@ -22,8 +22,8 @@ class InMemoryRuntimeRegistryTest {
 
     @Test
     void selectsOnlyCompatibleRuntimeType() {
-        registry.register(new RuntimeInstance("runtime-node", "NODE", RuntimeInstanceStatus.AVAILABLE, 4, 0));
-        registry.register(new RuntimeInstance("runtime-python", "PYTHON", RuntimeInstanceStatus.AVAILABLE, 4, 0));
+        registry.register(new RuntimeInstance("runtime-node", "NODE", RuntimeInstanceStatus.AVAILABLE, 4, 0, "/tmp/test.sock"));
+        registry.register(new RuntimeInstance("runtime-python", "PYTHON", RuntimeInstanceStatus.AVAILABLE, 4, 0, "/tmp/test.sock"));
 
         RuntimeTarget target = registry.selectAndReserve(new RuntimeRequirement("NODE"));
 
@@ -32,8 +32,8 @@ class InMemoryRuntimeRegistryTest {
 
     @Test
     void selectsRuntimeWithSpareCapacityOverFullRuntime() {
-        registry.register(new RuntimeInstance("runtime-a", "NODE", RuntimeInstanceStatus.AVAILABLE, 2, 2));
-        registry.register(new RuntimeInstance("runtime-b", "NODE", RuntimeInstanceStatus.AVAILABLE, 2, 1));
+        registry.register(new RuntimeInstance("runtime-a", "NODE", RuntimeInstanceStatus.AVAILABLE, 2, 2, "/tmp/test.sock"));
+        registry.register(new RuntimeInstance("runtime-b", "NODE", RuntimeInstanceStatus.AVAILABLE, 2, 1, "/tmp/test.sock"));
 
         RuntimeTarget target = registry.selectAndReserve(new RuntimeRequirement("NODE"));
 
@@ -42,9 +42,9 @@ class InMemoryRuntimeRegistryTest {
 
     @Test
     void selectsLeastInFlightAmongMultipleCandidates() {
-        registry.register(new RuntimeInstance("runtime-a", "NODE", RuntimeInstanceStatus.AVAILABLE, 10, 3));
-        registry.register(new RuntimeInstance("runtime-b", "NODE", RuntimeInstanceStatus.AVAILABLE, 10, 1));
-        registry.register(new RuntimeInstance("runtime-c", "NODE", RuntimeInstanceStatus.AVAILABLE, 10, 2));
+        registry.register(new RuntimeInstance("runtime-a", "NODE", RuntimeInstanceStatus.AVAILABLE, 10, 3, "/tmp/test.sock"));
+        registry.register(new RuntimeInstance("runtime-b", "NODE", RuntimeInstanceStatus.AVAILABLE, 10, 1, "/tmp/test.sock"));
+        registry.register(new RuntimeInstance("runtime-c", "NODE", RuntimeInstanceStatus.AVAILABLE, 10, 2, "/tmp/test.sock"));
 
         RuntimeTarget target = registry.selectAndReserve(new RuntimeRequirement("NODE"));
 
@@ -53,8 +53,8 @@ class InMemoryRuntimeRegistryTest {
 
     @Test
     void tieBreaksDeterministicallyByRuntimeInstanceId() {
-        registry.register(new RuntimeInstance("runtime-b", "NODE", RuntimeInstanceStatus.AVAILABLE, 10, 1));
-        registry.register(new RuntimeInstance("runtime-a", "NODE", RuntimeInstanceStatus.AVAILABLE, 10, 1));
+        registry.register(new RuntimeInstance("runtime-b", "NODE", RuntimeInstanceStatus.AVAILABLE, 10, 1, "/tmp/test.sock"));
+        registry.register(new RuntimeInstance("runtime-a", "NODE", RuntimeInstanceStatus.AVAILABLE, 10, 1, "/tmp/test.sock"));
 
         RuntimeTarget target = registry.selectAndReserve(new RuntimeRequirement("NODE"));
 
@@ -63,7 +63,7 @@ class InMemoryRuntimeRegistryTest {
 
     @Test
     void reservesCapacityOnSelectionAndBecomesIneligibleWhenFull() {
-        registry.register(new RuntimeInstance("runtime-a", "NODE", RuntimeInstanceStatus.AVAILABLE, 2, 1));
+        registry.register(new RuntimeInstance("runtime-a", "NODE", RuntimeInstanceStatus.AVAILABLE, 2, 1, "/tmp/test.sock"));
 
         registry.selectAndReserve(new RuntimeRequirement("NODE"));
 
@@ -73,7 +73,7 @@ class InMemoryRuntimeRegistryTest {
 
     @Test
     void releaseFreesUpAReservedSlot() {
-        registry.register(new RuntimeInstance("runtime-a", "NODE", RuntimeInstanceStatus.AVAILABLE, 2, 2));
+        registry.register(new RuntimeInstance("runtime-a", "NODE", RuntimeInstanceStatus.AVAILABLE, 2, 2, "/tmp/test.sock"));
 
         registry.release("runtime-a");
 
@@ -85,7 +85,7 @@ class InMemoryRuntimeRegistryTest {
 
     @Test
     void failsClearlyWhenNoCompatibleRuntimeIsRegistered() {
-        registry.register(new RuntimeInstance("runtime-python", "PYTHON", RuntimeInstanceStatus.AVAILABLE, 4, 0));
+        registry.register(new RuntimeInstance("runtime-python", "PYTHON", RuntimeInstanceStatus.AVAILABLE, 4, 0, "/tmp/test.sock"));
 
         NoRuntimeCapacityException exception = assertThrows(
                 NoRuntimeCapacityException.class,
@@ -96,7 +96,7 @@ class InMemoryRuntimeRegistryTest {
 
     @Test
     void failsClearlyWhenCompatibleRuntimeHasNoCapacity() {
-        registry.register(new RuntimeInstance("runtime-a", "NODE", RuntimeInstanceStatus.AVAILABLE, 1, 1));
+        registry.register(new RuntimeInstance("runtime-a", "NODE", RuntimeInstanceStatus.AVAILABLE, 1, 1, "/tmp/test.sock"));
 
         NoRuntimeCapacityException exception = assertThrows(
                 NoRuntimeCapacityException.class,
@@ -107,7 +107,7 @@ class InMemoryRuntimeRegistryTest {
 
     @Test
     void unregisterRemovesRuntimeFromSelection() {
-        registry.register(new RuntimeInstance("runtime-a", "NODE", RuntimeInstanceStatus.AVAILABLE, 4, 0));
+        registry.register(new RuntimeInstance("runtime-a", "NODE", RuntimeInstanceStatus.AVAILABLE, 4, 0, "/tmp/test.sock"));
 
         registry.unregister("runtime-a");
 

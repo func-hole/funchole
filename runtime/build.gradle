@@ -1,9 +1,31 @@
 plugins {
-    id 'java-library'
+    id 'application'
 }
 
-description = 'Runtime module placeholder for execution concerns.'
+description = 'Standalone runtime worker: accepts execution handoff over a local Unix Domain Socket.'
 
 dependencies {
-    implementation project(':core')
+    implementation 'com.fasterxml.jackson.core:jackson-databind'
+    implementation 'org.slf4j:slf4j-simple'
+
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+application {
+    mainClass = 'com.funchole.backend.runtime.RuntimeWorkerMain'
+}
+
+tasks.register('fatJar', Jar) {
+    group = 'build'
+    description = 'Assembles an executable fat jar for the runtime worker service.'
+    archiveFileName = 'funchole-runtime.jar'
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    manifest {
+        attributes 'Main-Class': application.mainClass.get()
+    }
+    from sourceSets.main.output
+    dependsOn configurations.runtimeClasspath
+    from {
+        configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) }
+    }
 }
