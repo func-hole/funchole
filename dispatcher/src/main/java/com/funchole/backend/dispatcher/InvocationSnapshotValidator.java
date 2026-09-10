@@ -33,8 +33,15 @@ public final class InvocationSnapshotValidator {
             return InvocationValidationResult.invalid(errors);
         }
 
+        validateRuntime(rootFlow, errors);
         validateSteps(rootFlow, errors);
         return errors.isEmpty() ? InvocationValidationResult.success() : InvocationValidationResult.invalid(errors);
+    }
+
+    private void validateRuntime(InvocationFlowSnapshot rootFlow, ArrayList<String> errors) {
+        if (rootFlow.runtime() == null || rootFlow.runtime().isBlank()) {
+            errors.add("Root flow runtime is required");
+        }
     }
 
     private void validateRoot(InvocationSnapshot snapshot, ArrayList<String> errors) {

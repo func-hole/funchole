@@ -6,6 +6,7 @@ description = 'Standalone invocation dispatcher service.'
 
 dependencies {
     implementation project(':invocation')
+    implementation project(':runtime-registry')
     implementation 'com.fasterxml.jackson.core:jackson-databind'
     implementation 'com.zaxxer:HikariCP'
     implementation "io.nats:jnats:${natsVersion}"

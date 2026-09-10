@@ -13,6 +13,7 @@ public record InvocationStepExecution(
         String componentType,
         UUID componentId,
         UUID componentVersionId,
+        String runtimeType,
         InvocationStepExecutionStatus status,
         int attempt,
         OffsetDateTime createdAt,

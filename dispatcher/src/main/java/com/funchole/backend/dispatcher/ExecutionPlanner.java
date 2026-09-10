@@ -60,6 +60,10 @@ public class ExecutionPlanner {
                     + " is missing its pinned component/version reference");
         }
 
+        String runtimeType = rootFlow.runtime() == null
+                ? ""
+                : rootFlow.runtime().trim().toUpperCase(Locale.ROOT);
+
         return new DispatchableStep(
                 invocation.invocationId(),
                 rootFlow.flowId(),
@@ -69,7 +73,8 @@ public class ExecutionPlanner {
                 candidate.stepKey(),
                 componentType,
                 candidate.componentId(),
-                candidate.componentVersionId()
+                candidate.componentVersionId(),
+                runtimeType
         );
     }
 

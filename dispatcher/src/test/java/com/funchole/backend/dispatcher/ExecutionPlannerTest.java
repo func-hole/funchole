@@ -46,6 +46,21 @@ class ExecutionPlannerTest {
         assertEquals("FUNCTION", planned.componentType());
         assertEquals(validateOrders.componentId(), planned.componentId());
         assertEquals(validateOrders.componentVersionId(), planned.componentVersionId());
+        assertEquals("NODE", planned.runtimeType());
+    }
+
+    @Test
+    void normalizesRuntimeTypeFromRootFlowSnapshot() {
+        InvocationStepSnapshot validateOrders = step(
+                "validate-orders-request", "FUNCTION", 1,
+                "88888888-8888-8888-8888-888888888861", "99999999-9999-9999-9999-999999999861");
+        InvocationFlowSnapshot rootFlow = new InvocationFlowSnapshot(
+                FLOW_ID, "flw_orders_list", FLOW_VERSION_ID, 1, "ADOPTED", "node", null, List.of(validateOrders));
+        InvocationSnapshot snapshot = new InvocationSnapshot(FLOW_ID, "flw_orders_list", FLOW_VERSION_ID, List.of(rootFlow));
+
+        DispatchableStep planned = planner.planInitialStep(invocation(), snapshot);
+
+        assertEquals("NODE", planned.runtimeType());
     }
 
     @Test

@@ -12,6 +12,9 @@ import com.funchole.backend.invocation.InvocationSnapshot;
 import com.funchole.backend.invocation.InvocationStatus;
 import com.funchole.backend.invocation.JdbcInvocationRegistry;
 import com.funchole.backend.invocation.NatsJetStreamInvocationEventPublisher;
+import com.funchole.backend.runtimeregistry.InMemoryRuntimeRegistry;
+import com.funchole.backend.runtimeregistry.RuntimeInstance;
+import com.funchole.backend.runtimeregistry.RuntimeInstanceStatus;
 import io.nats.client.Connection;
 import io.nats.client.Nats;
 import java.sql.Statement;
@@ -43,9 +46,12 @@ class InvocationDispatcherTest {
             .withExposedPorts(4222)
             .withCommand("-js", "-sd", "/tmp/nats/jetstream");
 
+    private static final String DEV_RUNTIME_INSTANCE_ID = "runtime-node-dev-1";
+
     private Connection natsConnection;
     private JdbcInvocationRegistry invocationRegistry;
     private JdbcInvocationStepExecutionRegistry stepExecutionRegistry;
+    private InMemoryRuntimeRegistry runtimeRegistry;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -132,6 +138,7 @@ class InvocationDispatcherTest {
                         component_type VARCHAR(100) not null,
                         component_id UUID not null,
                         component_version_id UUID not null,
+                        runtime_type VARCHAR(100) not null default 'NODE',
                         status VARCHAR(100) not null,
                         attempt INTEGER not null default 1,
                         created_at TIMESTAMP WITH TIME ZONE not null default CURRENT_TIMESTAMP,
@@ -148,6 +155,8 @@ class InvocationDispatcherTest {
                 new NatsJetStreamInvocationEventPublisher(natsConnection)
         );
         stepExecutionRegistry = new JdbcInvocationStepExecutionRegistry(dataSource);
+        runtimeRegistry = new InMemoryRuntimeRegistry();
+        runtimeRegistry.register(new RuntimeInstance(DEV_RUNTIME_INSTANCE_ID, "NODE", RuntimeInstanceStatus.AVAILABLE, 4, 0));
     }
 
     @AfterEach
@@ -192,7 +201,7 @@ class InvocationDispatcherTest {
                 flowVersionId,
                 "{\"path\":\"/dispatch\"}"
         ));
-        InvocationDispatcher dispatcher = new InvocationDispatcher(natsConnection, invocationRegistry, stepExecutionRegistry);
+        InvocationDispatcher dispatcher = new InvocationDispatcher(natsConnection, invocationRegistry, stepExecutionRegistry, runtimeRegistry);
 
         assertTrue(dispatcher.processNext(Duration.ofSeconds(5)));
         assertEquals(invocation.invocationId(), invocationRegistry.findById(invocation.invocationId()).orElseThrow().invocationId());
@@ -210,7 +219,7 @@ class InvocationDispatcherTest {
                 flowVersionId,
                 "{\"path\":\"/invalid\"}"
         ));
-        InvocationDispatcher dispatcher = new InvocationDispatcher(natsConnection, invocationRegistry, stepExecutionRegistry);
+        InvocationDispatcher dispatcher = new InvocationDispatcher(natsConnection, invocationRegistry, stepExecutionRegistry, runtimeRegistry);
 
         assertFalse(dispatcher.processNext(Duration.ofSeconds(5)));
         assertEquals(invocation.invocationId(), invocationRegistry.findById(invocation.invocationId()).orElseThrow().invocationId());
@@ -218,7 +227,7 @@ class InvocationDispatcherTest {
 
     @Test
     void doesNotAckAsSuccessWhenInvocationCannotBeLoaded() throws Exception {
-        InvocationDispatcher dispatcher = new InvocationDispatcher(natsConnection, new MissingInvocationRegistry(), stepExecutionRegistry);
+        InvocationDispatcher dispatcher = new InvocationDispatcher(natsConnection, new MissingInvocationRegistry(), stepExecutionRegistry, runtimeRegistry);
         natsConnection.jetStream().publish(
                 InvocationMessagingConfig.INVOCATION_READY_SUBJECT,
                 """
@@ -260,7 +269,7 @@ class InvocationDispatcherTest {
                 "{\"path\":\"/orders\"}"
         ));
         RecordingExecutionPlanner planner = new RecordingExecutionPlanner();
-        InvocationDispatcher dispatcher = new InvocationDispatcher(natsConnection, invocationRegistry, stepExecutionRegistry, planner);
+        InvocationDispatcher dispatcher = new InvocationDispatcher(natsConnection, invocationRegistry, stepExecutionRegistry, runtimeRegistry, planner);
 
         assertTrue(dispatcher.processNext(Duration.ofSeconds(5)));
 
@@ -273,6 +282,7 @@ class InvocationDispatcherTest {
         assertEquals("FUNCTION", step.componentType());
         assertEquals(firstComponentId, step.componentId());
         assertEquals(firstComponentVersionId, step.componentVersionId());
+        assertEquals("NODE", step.runtimeType());
         assertFalse(dispatcher.processNext(Duration.ofMillis(500)));
 
         InvocationStepExecution execution = stepExecutionRegistry.createOrGetReadyExecution(step);
@@ -284,6 +294,38 @@ class InvocationDispatcherTest {
         assertEquals(step.stepId(), execution.stepId());
         assertEquals(firstComponentId, execution.componentId());
         assertEquals(firstComponentVersionId, execution.componentVersionId());
+        assertEquals("NODE", execution.runtimeType());
+        assertEquals(1, countStepExecutions());
+
+        assertEquals(1, runtimeRegistry.find(DEV_RUNTIME_INSTANCE_ID).orElseThrow().inFlight());
+    }
+
+    @Test
+    void doesNotAckWhenRuntimeRegistryHasNoCapacity() throws Exception {
+        UUID flowId = UUID.fromString("10000000-0000-0000-0000-000000000151");
+        UUID flowVersionId = UUID.fromString("20000000-0000-0000-0000-000000000151");
+        insertFlow(flowId, "flw_no_runtime_capacity", flowVersionId, 1);
+        insertStep(
+                flowVersionId,
+                "validate-orders-request",
+                "FUNCTION",
+                1,
+                UUID.fromString("30000000-0000-0000-0000-000000000151"),
+                UUID.fromString("40000000-0000-0000-0000-000000000151")
+        );
+        invocationRegistry.create(new CreateInvocationRequest(
+                flowId,
+                "flw_no_runtime_capacity",
+                flowVersionId,
+                "{\"path\":\"/orders\"}"
+        ));
+        InMemoryRuntimeRegistry emptyRuntimeRegistry = new InMemoryRuntimeRegistry();
+        InvocationDispatcher dispatcher = new InvocationDispatcher(
+                natsConnection, invocationRegistry, stepExecutionRegistry, emptyRuntimeRegistry
+        );
+
+        assertFalse(dispatcher.processNext(Duration.ofSeconds(5)));
+
         assertEquals(1, countStepExecutions());
     }
 
@@ -309,7 +351,8 @@ class InvocationDispatcherTest {
         InvocationDispatcher dispatcher = new InvocationDispatcher(
                 natsConnection,
                 invocationRegistry,
-                new FailingInvocationStepExecutionRegistry()
+                new FailingInvocationStepExecutionRegistry(),
+                runtimeRegistry
         );
 
         assertFalse(dispatcher.processNext(Duration.ofSeconds(5)));
@@ -335,7 +378,7 @@ class InvocationDispatcherTest {
                 flowVersionId,
                 "{\"path\":\"/orders\"}"
         ));
-        InvocationDispatcher dispatcher = new InvocationDispatcher(natsConnection, invocationRegistry, stepExecutionRegistry);
+        InvocationDispatcher dispatcher = new InvocationDispatcher(natsConnection, invocationRegistry, stepExecutionRegistry, runtimeRegistry);
 
         assertFalse(dispatcher.processNext(Duration.ofSeconds(5)));
         assertEquals(InvocationStatus.PENDING, invocationRegistry.findById(invocation.invocationId()).orElseThrow().status());

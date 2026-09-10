@@ -24,7 +24,7 @@ The hostname belongs to the gateway. Functions and future flows are resolved und
 
 ## Current Status
 
-As of September 4, 2026, the backend is still in active foundation work. Core pieces are already running, but the platform is not feature-complete yet.
+As of September 10, 2026, the backend is still in active foundation work. Core pieces are already running, but the platform is not feature-complete yet.
 
 Implemented today:
 
@@ -40,14 +40,17 @@ Implemented today:
 * in-memory gateway TLS registry with short polling refresh
 * Invocation Registry with immutable dependency snapshot persistence
 * NATS + JetStream `INVOCATION_READY` publication
-* standalone `dispatcher` consumer that loads and ACKs ready invocations
+* standalone `dispatcher` consumer that validates the snapshot and plans the first executable step
+* durable, idempotent `InvocationStepExecution` records (`READY`, attempt tracking) so JetStream redelivery cannot double-create execution intent
+* standalone `runtime-registry` module: in-memory runtime capacity registration, compatibility filtering, and deterministic (least-in-flight) selection with reservation/release
+* dispatcher selects and reserves runtime capacity via the Runtime Registry before ACK-ing an invocation
 
 Not implemented yet:
 
-* flow execution
-* dispatcher orchestration beyond loading ready invocations
-* runtime registry
-* runtime execution
+* flow execution / actual Function invocation
+* step progression beyond the first step (no next-step, branching, or Sub-Flow execution yet)
+* IPC and the runtime worker protocol
+* durable/distributed runtime reservation (Runtime Registry state today is in-memory per dispatcher process only)
 * production ACME / Let's Encrypt flow
 * automatic host-machine DNS setup for custom local domains
 
@@ -143,6 +146,7 @@ funchole/
 ├── gateway/
 ├── invocation/
 ├── dispatcher/
+├── runtime-registry/
 ├── runtime/
 ├── Dockerfile
 ├── docker-compose.yml
@@ -159,7 +163,8 @@ funchole/
 | `core` | Shared pagination, exception, response, and mapper concerns |
 | `gateway` | Standalone raw Netty HTTPS ingress service |
 | `invocation` | Invocation persistence, immutable dependency snapshots, and ready-event publication |
-| `dispatcher` | Standalone JetStream consumer for ready invocations |
+| `dispatcher` | Standalone JetStream consumer: validates the snapshot, plans the next step, persists durable step-execution intent, and requests runtime capacity |
+| `runtime-registry` | In-memory runtime capacity registration, compatibility filtering, and deterministic selection/reservation |
 | `runtime` | Future execution/runtime layer |
 
 ## Responsibility Summary
@@ -261,6 +266,8 @@ com.funchole.backend
 ├── controlplane
 ├── gateway
 ├── invocation
+├── dispatcher
+├── runtime-registry
 └── runtime
 ```
 

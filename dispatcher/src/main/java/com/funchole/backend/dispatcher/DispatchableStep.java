@@ -11,6 +11,7 @@ public record DispatchableStep(
         String stepKey,
         String componentType,
         UUID componentId,
-        UUID componentVersionId
+        UUID componentVersionId,
+        String runtimeType
 ) {
 }

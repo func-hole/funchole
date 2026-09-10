@@ -7,6 +7,10 @@ import com.funchole.backend.invocation.InvocationReadyEvent;
 import com.funchole.backend.invocation.InvocationRegistry;
 import com.funchole.backend.invocation.InvocationSnapshot;
 import com.funchole.backend.invocation.InvocationStatus;
+import com.funchole.backend.runtimeregistry.RuntimeInstance;
+import com.funchole.backend.runtimeregistry.RuntimeRegistry;
+import com.funchole.backend.runtimeregistry.RuntimeRequirement;
+import com.funchole.backend.runtimeregistry.RuntimeTarget;
 import io.nats.client.Connection;
 import io.nats.client.JetStream;
 import io.nats.client.JetStreamApiException;
@@ -29,6 +33,7 @@ public final class InvocationDispatcher {
     private final Connection connection;
     private final InvocationRegistry invocationRegistry;
     private final InvocationStepExecutionRegistry stepExecutionRegistry;
+    private final RuntimeRegistry runtimeRegistry;
     private final ObjectMapper objectMapper;
     private final InvocationSnapshotValidator snapshotValidator;
     private final ExecutionPlanner executionPlanner;
@@ -37,20 +42,23 @@ public final class InvocationDispatcher {
     public InvocationDispatcher(
             Connection connection,
             InvocationRegistry invocationRegistry,
-            InvocationStepExecutionRegistry stepExecutionRegistry
+            InvocationStepExecutionRegistry stepExecutionRegistry,
+            RuntimeRegistry runtimeRegistry
     ) {
-        this(connection, invocationRegistry, stepExecutionRegistry, new ExecutionPlanner());
+        this(connection, invocationRegistry, stepExecutionRegistry, runtimeRegistry, new ExecutionPlanner());
     }
 
     InvocationDispatcher(
             Connection connection,
             InvocationRegistry invocationRegistry,
             InvocationStepExecutionRegistry stepExecutionRegistry,
+            RuntimeRegistry runtimeRegistry,
             ExecutionPlanner executionPlanner
     ) {
         this.connection = connection;
         this.invocationRegistry = invocationRegistry;
         this.stepExecutionRegistry = stepExecutionRegistry;
+        this.runtimeRegistry = runtimeRegistry;
         this.objectMapper = new ObjectMapper();
         this.snapshotValidator = new InvocationSnapshotValidator();
         this.executionPlanner = executionPlanner;
@@ -124,6 +132,20 @@ public final class InvocationDispatcher {
                 stepExecution.componentVersionId(),
                 stepExecution.attempt(),
                 stepExecution.status()
+        );
+
+        RuntimeRequirement runtimeRequirement = new RuntimeRequirement(stepExecution.runtimeType());
+        RuntimeTarget runtimeTarget = runtimeRegistry.selectAndReserve(runtimeRequirement);
+        RuntimeInstance selectedInstance = runtimeRegistry.find(runtimeTarget.runtimeInstanceId()).orElse(null);
+        logger.info(
+                "Runtime selected: executionId={}, invocationId={}, stepId={}, runtimeInstanceId={}, runtimeType={}, inFlight={}, capacity={}",
+                stepExecution.id(),
+                stepExecution.invocationId(),
+                stepExecution.stepId(),
+                runtimeTarget.runtimeInstanceId(),
+                runtimeTarget.runtimeType(),
+                selectedInstance == null ? "?" : selectedInstance.inFlight(),
+                selectedInstance == null ? "?" : selectedInstance.capacity()
         );
     }
 

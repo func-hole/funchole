@@ -51,13 +51,14 @@ public final class JdbcInvocationStepExecutionRegistry implements InvocationStep
                     component_type,
                     component_id,
                     component_version_id,
+                    runtime_type,
                     status,
                     attempt
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 on conflict (invocation_id, step_id, attempt) do nothing
                 returning id, invocation_id, flow_id, flow_version_id, step_id, position, component_type,
-                    component_id, component_version_id, status, attempt, created_at, updated_at
+                    component_id, component_version_id, runtime_type, status, attempt, created_at, updated_at
                 """)) {
             statement.setObject(1, UUID.randomUUID());
             statement.setObject(2, dispatchableStep.invocationId());
@@ -68,8 +69,9 @@ public final class JdbcInvocationStepExecutionRegistry implements InvocationStep
             statement.setString(7, dispatchableStep.componentType());
             statement.setObject(8, dispatchableStep.componentId());
             statement.setObject(9, dispatchableStep.componentVersionId());
-            statement.setString(10, InvocationStepExecutionStatus.READY.name());
-            statement.setInt(11, INITIAL_ATTEMPT);
+            statement.setString(10, dispatchableStep.runtimeType());
+            statement.setString(11, InvocationStepExecutionStatus.READY.name());
+            statement.setInt(12, INITIAL_ATTEMPT);
 
             try (ResultSet resultSet = statement.executeQuery()) {
                 if (resultSet.next()) {
@@ -88,7 +90,7 @@ public final class JdbcInvocationStepExecutionRegistry implements InvocationStep
     ) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement("""
                 select id, invocation_id, flow_id, flow_version_id, step_id, position, component_type,
-                    component_id, component_version_id, status, attempt, created_at, updated_at
+                    component_id, component_version_id, runtime_type, status, attempt, created_at, updated_at
                 from invocation_step_executions
                 where invocation_id = ? and step_id = ? and attempt = ?
                 """)) {
@@ -115,6 +117,7 @@ public final class JdbcInvocationStepExecutionRegistry implements InvocationStep
                 resultSet.getString("component_type"),
                 resultSet.getObject("component_id", UUID.class),
                 resultSet.getObject("component_version_id", UUID.class),
+                resultSet.getString("runtime_type"),
                 InvocationStepExecutionStatus.valueOf(resultSet.getString("status")),
                 resultSet.getInt("attempt"),
                 resultSet.getObject("created_at", OffsetDateTime.class),

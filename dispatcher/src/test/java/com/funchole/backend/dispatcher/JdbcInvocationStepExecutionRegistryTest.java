@@ -44,6 +44,7 @@ class JdbcInvocationStepExecutionRegistryTest {
                         component_type VARCHAR(100) not null,
                         component_id UUID not null,
                         component_version_id UUID not null,
+                        runtime_type VARCHAR(100) not null default 'NODE',
                         status VARCHAR(100) not null,
                         attempt INTEGER not null default 1,
                         created_at TIMESTAMP WITH TIME ZONE not null default CURRENT_TIMESTAMP,
@@ -72,6 +73,7 @@ class JdbcInvocationStepExecutionRegistryTest {
         assertEquals(dispatchableStep.componentType(), execution.componentType());
         assertEquals(dispatchableStep.componentId(), execution.componentId());
         assertEquals(dispatchableStep.componentVersionId(), execution.componentVersionId());
+        assertEquals(dispatchableStep.runtimeType(), execution.runtimeType());
         assertNotNull(execution.createdAt());
         assertNotNull(execution.updatedAt());
     }
@@ -136,7 +138,8 @@ class JdbcInvocationStepExecutionRegistryTest {
                 "validate-orders-request",
                 "FUNCTION",
                 UUID.randomUUID(),
-                UUID.randomUUID()
+                UUID.randomUUID(),
+                "NODE"
         );
     }
 
@@ -148,11 +151,11 @@ class JdbcInvocationStepExecutionRegistryTest {
             statement.execute("""
                     insert into invocation_step_executions (
                         id, invocation_id, flow_id, flow_version_id, step_id, position,
-                        component_type, component_id, component_version_id, status, attempt
+                        component_type, component_id, component_version_id, runtime_type, status, attempt
                     )
                     values (
                         '%s', '%s', '%s', '%s', '%s', %s,
-                        '%s', '%s', '%s', 'READY', %s
+                        '%s', '%s', '%s', '%s', 'READY', %s
                     )
                     """.formatted(
                     UUID.randomUUID(),
@@ -164,6 +167,7 @@ class JdbcInvocationStepExecutionRegistryTest {
                     dispatchableStep.componentType(),
                     dispatchableStep.componentId(),
                     dispatchableStep.componentVersionId(),
+                    dispatchableStep.runtimeType(),
                     attempt
             ));
         }

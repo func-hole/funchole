@@ -2,6 +2,10 @@ package com.funchole.backend.dispatcher;
 
 import com.funchole.backend.invocation.InvocationMessagingConfig;
 import com.funchole.backend.invocation.JdbcInvocationRegistry;
+import com.funchole.backend.runtimeregistry.InMemoryRuntimeRegistry;
+import com.funchole.backend.runtimeregistry.RuntimeInstance;
+import com.funchole.backend.runtimeregistry.RuntimeInstanceStatus;
+import com.funchole.backend.runtimeregistry.RuntimeRegistry;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import io.nats.client.Connection;
@@ -23,7 +27,8 @@ public final class DispatcherMain {
         InvocationDispatcher dispatcher = new InvocationDispatcher(
                 natsConnection,
                 new JdbcInvocationRegistry(dataSource),
-                new JdbcInvocationStepExecutionRegistry(dataSource)
+                new JdbcInvocationStepExecutionRegistry(dataSource),
+                createRuntimeRegistry()
         );
         Duration pollTimeout = Duration.ofMillis(readInt("DISPATCHER_POLL_TIMEOUT_MS", 1000));
 
@@ -48,6 +53,18 @@ public final class DispatcherMain {
         while (!Thread.currentThread().isInterrupted()) {
             dispatcher.processNext(pollTimeout);
         }
+    }
+
+    private static RuntimeRegistry createRuntimeRegistry() {
+        InMemoryRuntimeRegistry runtimeRegistry = new InMemoryRuntimeRegistry();
+        runtimeRegistry.register(new RuntimeInstance(
+                readString("DEV_RUNTIME_INSTANCE_ID", "runtime-node-dev-1"),
+                readString("DEV_RUNTIME_TYPE", "NODE"),
+                RuntimeInstanceStatus.AVAILABLE,
+                readInt("DEV_RUNTIME_CAPACITY", 4),
+                0
+        ));
+        return runtimeRegistry;
     }
 
     private static DataSource createDataSource() {

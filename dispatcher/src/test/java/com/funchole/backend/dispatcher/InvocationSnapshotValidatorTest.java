@@ -106,6 +106,30 @@ class InvocationSnapshotValidatorTest {
         assertFalse(result.valid());
     }
 
+    @Test
+    void rejectsMissingRootFlowRuntime() {
+        InvocationSnapshot missingRuntimeSnapshot = new InvocationSnapshot(
+                FLOW_ID,
+                "flw_orders_list",
+                FLOW_VERSION_ID,
+                List.of(new InvocationFlowSnapshot(
+                        FLOW_ID,
+                        "flw_orders_list",
+                        FLOW_VERSION_ID,
+                        1,
+                        "ADOPTED",
+                        null,
+                        null,
+                        List.of(step(STEP_ID, "validate-orders-request", "FUNCTION", 1, COMPONENT_ID, COMPONENT_VERSION_ID))
+                ))
+        );
+
+        InvocationValidationResult result = validator.validate(missingRuntimeSnapshot);
+
+        assertFalse(result.valid());
+        assertTrue(result.errors().contains("Root flow runtime is required"));
+    }
+
     private InvocationSnapshot snapshot(List<InvocationStepSnapshot> steps) {
         return new InvocationSnapshot(
                 FLOW_ID,

@@ -1,0 +1,9 @@
+plugins {
+    id 'java-library'
+}
+
+description = 'Runtime Registry module for runtime capacity registration and selection.'
+
+dependencies {
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
