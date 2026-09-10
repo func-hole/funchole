@@ -162,10 +162,13 @@ public final class InvocationDispatcher {
         try {
             RuntimeExecutionRequest executionRequest =
                     RuntimeExecutionRequest.fromStepExecution(stepExecution, invocation);
-            RuntimeExecutionAcceptance acceptance = executionGateway.handoff(runtimeTarget, executionRequest);
+            RuntimeExecutionHandle handle = executionGateway.handoff(runtimeTarget, executionRequest);
+            RuntimeExecutionAcceptance acceptance = handle.acceptance();
             if (!acceptance.accepted()) {
                 throw new IllegalStateException("Runtime execution handoff rejected: " + acceptance.rejectionReason());
             }
+            stepExecution = stepExecutionRegistry.markRunning(stepExecution.id(), runtimeTarget.runtimeInstanceId());
+            registerTerminalCompletion(stepExecution, runtimeTarget, handle);
         } catch (RuntimeException handoffFailure) {
             runtimeRegistry.release(runtimeTarget.runtimeInstanceId());
             throw handoffFailure;
@@ -173,7 +176,7 @@ public final class InvocationDispatcher {
 
         RuntimeInstance selectedInstance = runtimeRegistry.find(runtimeTarget.runtimeInstanceId()).orElse(null);
         logger.info(
-                "Runtime execution accepted: executionId={}, invocationId={}, stepId={}, componentId={}, componentVersionId={}, runtimeInstanceId={}, runtimeType={}, attempt={}, inFlight={}, capacity={}",
+                "Runtime execution accepted: executionId={}, invocationId={}, stepId={}, componentId={}, componentVersionId={}, runtimeInstanceId={}, runtimeType={}, attempt={}, status={}, inFlight={}, capacity={}",
                 stepExecution.id(),
                 stepExecution.invocationId(),
                 stepExecution.stepId(),
@@ -182,9 +185,67 @@ public final class InvocationDispatcher {
                 runtimeTarget.runtimeInstanceId(),
                 runtimeTarget.runtimeType(),
                 stepExecution.attempt(),
+                stepExecution.status(),
                 selectedInstance == null ? "?" : selectedInstance.inFlight(),
                 selectedInstance == null ? "?" : selectedInstance.capacity()
         );
+    }
+
+    private void registerTerminalCompletion(
+            InvocationStepExecution stepExecution,
+            RuntimeTarget runtimeTarget,
+            RuntimeExecutionHandle handle
+    ) {
+        handle.completion().whenComplete((result, failure) -> {
+            if (failure != null) {
+                logger.warn(
+                        "Runtime completion failed before terminal message: executionId={}, runtimeInstanceId={}, message={}",
+                        stepExecution.id(),
+                        runtimeTarget.runtimeInstanceId(),
+                        failure.getMessage()
+                );
+                return;
+            }
+            handleTerminalResult(result, runtimeTarget);
+        });
+    }
+
+    private void handleTerminalResult(RuntimeExecutionResult result, RuntimeTarget runtimeTarget) {
+        try {
+            InvocationStepExecutionTransition transition = switch (result.terminalType()) {
+                case RESULT -> stepExecutionRegistry.markCompleted(result.executionId(), result);
+                case ERROR -> stepExecutionRegistry.markFailed(result.executionId(), result);
+            };
+            if (transition.transitioned()) {
+                runtimeRegistry.release(runtimeTarget.runtimeInstanceId());
+            }
+            InvocationStepExecution execution = transition.execution();
+            if (execution.status() == InvocationStepExecutionStatus.COMPLETED) {
+                logger.info(
+                        "Runtime execution completed: executionId={}, status={}, runtimeInstanceId={}, capacityReleased={}",
+                        execution.id(),
+                        execution.status(),
+                        runtimeTarget.runtimeInstanceId(),
+                        transition.transitioned()
+                );
+            } else {
+                logger.info(
+                        "Runtime execution failed: executionId={}, status={}, errorCode={}, runtimeInstanceId={}, capacityReleased={}",
+                        execution.id(),
+                        execution.status(),
+                        result.error() == null ? "UNKNOWN" : result.error().code(),
+                        runtimeTarget.runtimeInstanceId(),
+                        transition.transitioned()
+                );
+            }
+        } catch (RuntimeException exception) {
+            logger.warn(
+                    "Runtime terminal persistence failed: executionId={}, runtimeInstanceId={}, message={}",
+                    result.executionId(),
+                    runtimeTarget.runtimeInstanceId(),
+                    exception.getMessage()
+            );
+        }
     }
 
     private JetStreamSubscription subscribe() {

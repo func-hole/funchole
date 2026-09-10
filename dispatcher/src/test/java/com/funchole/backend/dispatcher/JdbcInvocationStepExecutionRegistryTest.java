@@ -1,7 +1,9 @@
 package com.funchole.backend.dispatcher;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.sql.Connection;
 import java.sql.Statement;
@@ -45,10 +47,15 @@ class JdbcInvocationStepExecutionRegistryTest {
                         component_id UUID not null,
                         component_version_id UUID not null,
                         runtime_type VARCHAR(100) not null default 'NODE',
+                        runtime_instance_id VARCHAR(255),
                         status VARCHAR(100) not null,
                         attempt INTEGER not null default 1,
+                        result JSONB,
+                        error JSONB,
                         created_at TIMESTAMP WITH TIME ZONE not null default CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP WITH TIME ZONE not null default CURRENT_TIMESTAMP,
+                        started_at TIMESTAMP WITH TIME ZONE,
+                        completed_at TIMESTAMP WITH TIME ZONE,
                         constraint uk_invocation_step_executions_invocation_step_attempt unique (invocation_id, step_id, attempt)
                     )
                     """);
@@ -118,6 +125,101 @@ class JdbcInvocationStepExecutionRegistryTest {
 
         assertEquals(1, countExecutions(invocationId, stepId, 1));
         assertEquals(1, countExecutions(invocationId, stepId, 2));
+    }
+
+    @Test
+    void marksReadyExecutionRunningWithRuntimeOwner() {
+        InvocationStepExecution ready = registry.createOrGetReadyExecution(
+                dispatchableStep(UUID.randomUUID(), UUID.randomUUID()));
+
+        InvocationStepExecution running = registry.markRunning(ready.id(), "runtime-node-dev-1");
+
+        assertEquals(InvocationStepExecutionStatus.RUNNING, running.status());
+        assertEquals("runtime-node-dev-1", running.runtimeInstanceId());
+        assertNotNull(running.startedAt());
+    }
+
+    @Test
+    void marksRunningExecutionCompletedWithResult() {
+        InvocationStepExecution ready = registry.createOrGetReadyExecution(
+                dispatchableStep(UUID.randomUUID(), UUID.randomUUID()));
+        InvocationStepExecution running = registry.markRunning(ready.id(), "runtime-node-dev-1");
+        RuntimeExecutionResult result = RuntimeExecutionResult.success(running.id(), "{\"ok\":true}");
+
+        InvocationStepExecutionTransition transition = registry.markCompleted(running.id(), result);
+
+        assertEquals(InvocationStepExecutionStatus.COMPLETED, transition.execution().status());
+        assertEquals("{\"ok\": true}", transition.execution().result());
+        assertEquals(null, transition.execution().error());
+        assertNotNull(transition.execution().completedAt());
+        assertEquals(true, transition.transitioned());
+    }
+
+    @Test
+    void duplicateCompletedResultIsIdempotent() {
+        InvocationStepExecution running = registry.markRunning(
+                registry.createOrGetReadyExecution(dispatchableStep(UUID.randomUUID(), UUID.randomUUID())).id(),
+                "runtime-node-dev-1"
+        );
+        RuntimeExecutionResult result = RuntimeExecutionResult.success(running.id(), "{\"ok\":true}");
+        registry.markCompleted(running.id(), result);
+
+        InvocationStepExecutionTransition duplicate = registry.markCompleted(running.id(), result);
+
+        assertEquals(InvocationStepExecutionStatus.COMPLETED, duplicate.execution().status());
+        assertFalse(duplicate.transitioned());
+    }
+
+    @Test
+    void marksRunningExecutionFailedWithError() {
+        InvocationStepExecution running = registry.markRunning(
+                registry.createOrGetReadyExecution(dispatchableStep(UUID.randomUUID(), UUID.randomUUID())).id(),
+                "runtime-node-dev-1"
+        );
+        RuntimeExecutionResult result = RuntimeExecutionResult.failure(
+                running.id(),
+                new RuntimeExecutionError("FAKE_RUNTIME_ERROR", "Simulated runtime failure")
+        );
+
+        InvocationStepExecutionTransition transition = registry.markFailed(running.id(), result);
+
+        assertEquals(InvocationStepExecutionStatus.FAILED, transition.execution().status());
+        assertEquals(null, transition.execution().result());
+        assertEquals("{\"code\": \"FAKE_RUNTIME_ERROR\", \"message\": \"Simulated runtime failure\"}", transition.execution().error());
+        assertEquals(true, transition.transitioned());
+    }
+
+    @Test
+    void duplicateFailedResultIsIdempotent() {
+        InvocationStepExecution running = registry.markRunning(
+                registry.createOrGetReadyExecution(dispatchableStep(UUID.randomUUID(), UUID.randomUUID())).id(),
+                "runtime-node-dev-1"
+        );
+        RuntimeExecutionResult result = RuntimeExecutionResult.failure(
+                running.id(),
+                new RuntimeExecutionError("FAKE_RUNTIME_ERROR", "Simulated runtime failure")
+        );
+        registry.markFailed(running.id(), result);
+
+        InvocationStepExecutionTransition duplicate = registry.markFailed(running.id(), result);
+
+        assertEquals(InvocationStepExecutionStatus.FAILED, duplicate.execution().status());
+        assertFalse(duplicate.transitioned());
+    }
+
+    @Test
+    void conflictingTerminalMessageDoesNotOverwriteTerminalState() {
+        InvocationStepExecution running = registry.markRunning(
+                registry.createOrGetReadyExecution(dispatchableStep(UUID.randomUUID(), UUID.randomUUID())).id(),
+                "runtime-node-dev-1"
+        );
+        registry.markCompleted(running.id(), RuntimeExecutionResult.success(running.id(), "{\"ok\":true}"));
+
+        assertThrows(IllegalStateException.class, () -> registry.markFailed(
+                running.id(),
+                RuntimeExecutionResult.failure(running.id(), new RuntimeExecutionError("FAKE_RUNTIME_ERROR", "boom"))
+        ));
+        assertEquals(InvocationStepExecutionStatus.COMPLETED, registry.findById(running.id()).orElseThrow().status());
     }
 
     private DataSource dataSource() {

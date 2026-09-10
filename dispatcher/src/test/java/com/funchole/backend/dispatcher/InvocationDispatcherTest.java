@@ -140,10 +140,15 @@ class InvocationDispatcherTest {
                         component_id UUID not null,
                         component_version_id UUID not null,
                         runtime_type VARCHAR(100) not null default 'NODE',
+                        runtime_instance_id VARCHAR(255),
                         status VARCHAR(100) not null,
                         attempt INTEGER not null default 1,
+                        result JSONB,
+                        error JSONB,
                         created_at TIMESTAMP WITH TIME ZONE not null default CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP WITH TIME ZONE not null default CURRENT_TIMESTAMP,
+                        started_at TIMESTAMP WITH TIME ZONE,
+                        completed_at TIMESTAMP WITH TIME ZONE,
                         constraint uk_invocation_step_executions_invocation_step_attempt unique (invocation_id, step_id, attempt)
                     )
                     """);
@@ -288,7 +293,7 @@ class InvocationDispatcherTest {
         assertFalse(dispatcher.processNext(Duration.ofMillis(500)));
 
         InvocationStepExecution execution = stepExecutionRegistry.createOrGetReadyExecution(step);
-        assertEquals(InvocationStepExecutionStatus.READY, execution.status());
+        assertEquals(InvocationStepExecutionStatus.COMPLETED, execution.status());
         assertEquals(1, execution.attempt());
         assertEquals(invocation.invocationId(), execution.invocationId());
         assertEquals(flowId, execution.flowId());
@@ -299,7 +304,7 @@ class InvocationDispatcherTest {
         assertEquals("NODE", execution.runtimeType());
         assertEquals(1, countStepExecutions());
 
-        assertEquals(1, runtimeRegistry.find(DEV_RUNTIME_INSTANCE_ID).orElseThrow().inFlight());
+        assertEquals(0, runtimeRegistry.find(DEV_RUNTIME_INSTANCE_ID).orElseThrow().inFlight());
     }
 
     @Test
@@ -420,7 +425,7 @@ class InvocationDispatcherTest {
         assertEquals(1, request.attempt());
         assertEquals("{\"path\": \"/orders\"}", request.input());
         assertEquals("NODE", target.runtimeType());
-        assertEquals(1, runtimeRegistry.find(DEV_RUNTIME_INSTANCE_ID).orElseThrow().inFlight());
+        assertEquals(0, runtimeRegistry.find(DEV_RUNTIME_INSTANCE_ID).orElseThrow().inFlight());
         assertFalse(dispatcher.processNext(Duration.ofMillis(500)));
     }
 
@@ -490,7 +495,7 @@ class InvocationDispatcherTest {
     }
 
     @Test
-    void realIpcHandoffAcceptsAndRetainsReservationThenAcks() throws Exception {
+    void realIpcHandoffCompletesAndReleasesReservationThenAcks() throws Exception {
         UUID flowId = UUID.fromString("10000000-0000-0000-0000-000000000191");
         UUID flowVersionId = UUID.fromString("20000000-0000-0000-0000-000000000191");
         insertFlow(flowId, "flw_orders_list", flowVersionId, 1);
@@ -519,9 +524,45 @@ class InvocationDispatcherTest {
 
             assertTrue(dispatcher.processNext(Duration.ofSeconds(5)));
 
-            assertEquals(1, ipcRuntimeRegistry.find("runtime-node-ipc").orElseThrow().inFlight());
+            assertEquals(0, ipcRuntimeRegistry.find("runtime-node-ipc").orElseThrow().inFlight());
             assertEquals(1, worker.receivedExecutionIds().size());
         }
+    }
+
+    @Test
+    void doesNotReleaseReservedCapacityWhenTerminalPersistenceFails() throws Exception {
+        UUID flowId = UUID.fromString("10000000-0000-0000-0000-000000000211");
+        UUID flowVersionId = UUID.fromString("20000000-0000-0000-0000-000000000211");
+        insertFlow(flowId, "flw_terminal_persistence_failure", flowVersionId, 1);
+        insertStep(
+                flowVersionId,
+                "validate-orders-request",
+                "FUNCTION",
+                1,
+                UUID.fromString("30000000-0000-0000-0000-000000000211"),
+                UUID.fromString("40000000-0000-0000-0000-000000000211")
+        );
+        invocationRegistry.create(new CreateInvocationRequest(
+                flowId,
+                "flw_terminal_persistence_failure",
+                flowVersionId,
+                "{\"path\":\"/orders\"}"
+        ));
+        InMemoryRuntimeRegistry singleCapacityRegistry = new InMemoryRuntimeRegistry();
+        singleCapacityRegistry.register(new RuntimeInstance(
+                "runtime-node-single", "NODE", RuntimeInstanceStatus.AVAILABLE, 1, 0, "/tmp/test-single.sock"));
+        InvocationDispatcher dispatcher = new InvocationDispatcher(
+                natsConnection,
+                invocationRegistry,
+                new TerminalFailingInvocationStepExecutionRegistry(stepExecutionRegistry),
+                singleCapacityRegistry,
+                new ExecutionPlanner(),
+                new InMemoryRuntimeExecutionGateway()
+        );
+
+        assertTrue(dispatcher.processNext(Duration.ofSeconds(5)));
+
+        assertEquals(1, singleCapacityRegistry.find("runtime-node-single").orElseThrow().inFlight());
     }
 
     @Test
@@ -693,6 +734,50 @@ class InvocationDispatcherTest {
         public InvocationStepExecution createOrGetReadyExecution(DispatchableStep dispatchableStep) {
             throw new IllegalStateException("Simulated step execution persistence failure");
         }
+
+        @Override
+        public InvocationStepExecution markRunning(UUID executionId, String runtimeInstanceId) {
+            throw new UnsupportedOperationException("not used");
+        }
+
+        @Override
+        public InvocationStepExecutionTransition markCompleted(UUID executionId, RuntimeExecutionResult result) {
+            throw new UnsupportedOperationException("not used");
+        }
+
+        @Override
+        public InvocationStepExecutionTransition markFailed(UUID executionId, RuntimeExecutionResult result) {
+            throw new UnsupportedOperationException("not used");
+        }
+    }
+
+    private static final class TerminalFailingInvocationStepExecutionRegistry implements InvocationStepExecutionRegistry {
+
+        private final InvocationStepExecutionRegistry delegate;
+
+        private TerminalFailingInvocationStepExecutionRegistry(InvocationStepExecutionRegistry delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public InvocationStepExecution createOrGetReadyExecution(DispatchableStep dispatchableStep) {
+            return delegate.createOrGetReadyExecution(dispatchableStep);
+        }
+
+        @Override
+        public InvocationStepExecution markRunning(UUID executionId, String runtimeInstanceId) {
+            return delegate.markRunning(executionId, runtimeInstanceId);
+        }
+
+        @Override
+        public InvocationStepExecutionTransition markCompleted(UUID executionId, RuntimeExecutionResult result) {
+            throw new IllegalStateException("Simulated terminal persistence failure");
+        }
+
+        @Override
+        public InvocationStepExecutionTransition markFailed(UUID executionId, RuntimeExecutionResult result) {
+            throw new IllegalStateException("Simulated terminal persistence failure");
+        }
     }
 
     private static final class CapturingRuntimeExecutionGateway implements RuntimeExecutionGateway {
@@ -702,7 +787,7 @@ class InvocationDispatcherTest {
         private RuntimeExecutionRequest capturedRequest;
 
         @Override
-        public RuntimeExecutionAcceptance handoff(RuntimeTarget target, RuntimeExecutionRequest request) {
+        public RuntimeExecutionHandle handoff(RuntimeTarget target, RuntimeExecutionRequest request) {
             capturedTarget = target;
             capturedRequest = request;
             return delegate.handoff(target, request);
@@ -720,15 +805,18 @@ class InvocationDispatcherTest {
     private static final class RejectingRuntimeExecutionGateway implements RuntimeExecutionGateway {
 
         @Override
-        public RuntimeExecutionAcceptance handoff(RuntimeTarget target, RuntimeExecutionRequest request) {
-            return RuntimeExecutionAcceptance.reject(request.executionId(), "simulated handoff rejection");
+        public RuntimeExecutionHandle handoff(RuntimeTarget target, RuntimeExecutionRequest request) {
+            return new RuntimeExecutionHandle(
+                    RuntimeExecutionAcceptance.reject(request.executionId(), "simulated handoff rejection"),
+                    java.util.concurrent.CompletableFuture.failedFuture(new IllegalStateException("simulated handoff rejection"))
+            );
         }
     }
 
     private static final class ThrowingRuntimeExecutionGateway implements RuntimeExecutionGateway {
 
         @Override
-        public RuntimeExecutionAcceptance handoff(RuntimeTarget target, RuntimeExecutionRequest request) {
+        public RuntimeExecutionHandle handoff(RuntimeTarget target, RuntimeExecutionRequest request) {
             throw new IllegalStateException("Simulated runtime gateway failure");
         }
     }

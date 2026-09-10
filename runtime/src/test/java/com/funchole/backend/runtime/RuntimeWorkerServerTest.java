@@ -1,6 +1,7 @@
 package com.funchole.backend.runtime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -97,17 +98,58 @@ class RuntimeWorkerServerTest {
     }
 
     @Test
+    void sendsFakeResultAfterAccepted() throws Exception {
+        UUID executionId = UUID.randomUUID();
+
+        try (TestClient client = TestClient.connect(socketPath)) {
+            client.sendInvoke(executionId, "NODE");
+            RuntimeAcceptedMessage accepted = OBJECT_MAPPER.readValue(client.readLine(), RuntimeAcceptedMessage.class);
+            RuntimeTerminalMessage result = OBJECT_MAPPER.readValue(client.readLine(), RuntimeTerminalMessage.class);
+
+            assertEquals(executionId, accepted.executionId());
+            assertEquals("RESULT", result.type());
+            assertEquals(executionId, result.executionId());
+            assertNotNull(result.output());
+            assertNull(result.error());
+        }
+    }
+
+    @Test
+    void canSendFakeErrorAfterAccepted() throws Exception {
+        server.close();
+        server = RuntimeWorkerServer.bind(socketPath, "runtime-node-test-1", "NODE", RuntimeTerminalMode.ERROR, 1);
+        server.start();
+        UUID executionId = UUID.randomUUID();
+
+        try (TestClient client = TestClient.connect(socketPath)) {
+            client.sendInvoke(executionId, "NODE");
+            RuntimeAcceptedMessage accepted = OBJECT_MAPPER.readValue(client.readLine(), RuntimeAcceptedMessage.class);
+            RuntimeTerminalMessage error = OBJECT_MAPPER.readValue(client.readLine(), RuntimeTerminalMessage.class);
+
+            assertEquals(executionId, accepted.executionId());
+            assertEquals("ERROR", error.type());
+            assertEquals(executionId, error.executionId());
+            assertNull(error.output());
+            assertEquals("FAKE_RUNTIME_ERROR", error.error().code());
+            assertEquals("Simulated runtime failure", error.error().message());
+        }
+    }
+
+    @Test
     void deduplicatesRepeatedExecutionIdWithinProcessLifetime() throws Exception {
         UUID executionId = UUID.randomUUID();
 
         try (TestClient client = TestClient.connect(socketPath)) {
             client.sendInvoke(executionId, "NODE");
             String firstResponse = client.readLine();
+            client.readLine();
             client.sendInvoke(executionId, "NODE");
             String secondResponse = client.readLine();
+            String replayedTerminal = client.readLine();
 
             assertEquals(executionId, OBJECT_MAPPER.readValue(firstResponse, RuntimeAcceptedMessage.class).executionId());
             assertEquals(executionId, OBJECT_MAPPER.readValue(secondResponse, RuntimeAcceptedMessage.class).executionId());
+            assertEquals(executionId, OBJECT_MAPPER.readValue(replayedTerminal, RuntimeTerminalMessage.class).executionId());
         }
         assertEquals(1, server.acceptedCount());
     }

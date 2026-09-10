@@ -1,5 +1,8 @@
 package com.funchole.backend.dispatcher;
 
 public enum InvocationStepExecutionStatus {
-    READY
+    READY,
+    RUNNING,
+    COMPLETED,
+    FAILED
 }

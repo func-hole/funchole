@@ -8,8 +8,8 @@ import com.funchole.backend.runtimeregistry.RuntimeTarget;
  *
  * The gateway owns the handoff only. It knows nothing about Flow order,
  * planning, or step progression; the request arrives already complete. It
- * does not wait for execution completion and answers only whether the
- * selected target accepted the execution.
+ * waits only for handoff acceptance. Terminal execution completion is exposed
+ * separately through the returned handle.
  *
  * {@link InMemoryRuntimeExecutionGateway} remains for tests/dev fakes.
  * {@link IpcRuntimeExecutionGateway} is the real local transport: a
@@ -17,5 +17,5 @@ import com.funchole.backend.runtimeregistry.RuntimeTarget;
  */
 public interface RuntimeExecutionGateway {
 
-    RuntimeExecutionAcceptance handoff(RuntimeTarget target, RuntimeExecutionRequest request);
+    RuntimeExecutionHandle handoff(RuntimeTarget target, RuntimeExecutionRequest request);
 }

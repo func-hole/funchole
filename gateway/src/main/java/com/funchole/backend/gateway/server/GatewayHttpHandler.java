@@ -23,9 +23,12 @@ import io.netty.handler.codec.http.HttpVersion;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.Optional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @ChannelHandler.Sharable
 public final class GatewayHttpHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
+    private static final Logger logger = LoggerFactory.getLogger(GatewayHttpHandler.class);
 
     private final ObjectMapper objectMapper;
     private final GatewayRegistry gatewayRegistry;
@@ -47,6 +50,12 @@ public final class GatewayHttpHandler extends SimpleChannelInboundHandler<FullHt
     @Override
     protected void channelRead0(ChannelHandlerContext context, FullHttpRequest request) throws Exception {
         GatewayRequestContext requestContext = toRequestContext(request);
+        logger.info(
+                "Gateway request received: method={}, host={}, path={}",
+                requestContext.method(),
+                requestContext.hostname(),
+                requestContext.path()
+        );
 
         if ("/health".equals(requestContext.path())) {
             writeJson(context, HttpResponseStatus.OK, Map.of(
@@ -70,6 +79,11 @@ public final class GatewayHttpHandler extends SimpleChannelInboundHandler<FullHt
 
         GatewayRuntimeEntry gateway = gatewayRegistry.findByHostname(requestContext.hostname());
         if (gateway == null) {
+            logger.info(
+                    "Gateway request rejected: reason=unknown-host, host={}, path={}",
+                    requestContext.hostname(),
+                    requestContext.path()
+            );
             writeJson(context, HttpResponseStatus.NOT_FOUND, Map.of(
                     "success", false,
                     "message", "Gateway host not found",
@@ -81,6 +95,12 @@ public final class GatewayHttpHandler extends SimpleChannelInboundHandler<FullHt
 
         Optional<FlowResolution> resolution = flowResolver.resolve(gateway, requestContext);
         if (resolution.isEmpty()) {
+            logger.info(
+                    "Gateway request rejected: reason=route-not-found, host={}, method={}, path={}",
+                    requestContext.hostname(),
+                    requestContext.method(),
+                    requestContext.path()
+            );
             writeJson(context, HttpResponseStatus.NOT_FOUND, Map.of(
                     "success", false,
                     "message", "Route not found",
@@ -98,6 +118,16 @@ public final class GatewayHttpHandler extends SimpleChannelInboundHandler<FullHt
                 flow.flowVersionId(),
                 buildInvocationInput(request, requestContext)
         ));
+
+        logger.info(
+                "Gateway invocation created: invocationId={}, flowKey={}, flowVersionId={}, host={}, method={}, path={}",
+                invocation.invocationId(),
+                invocation.flowKey(),
+                invocation.flowVersionId(),
+                requestContext.hostname(),
+                requestContext.method(),
+                requestContext.path()
+        );
 
         writeJson(context, HttpResponseStatus.ACCEPTED, Map.of(
                 "success", true,

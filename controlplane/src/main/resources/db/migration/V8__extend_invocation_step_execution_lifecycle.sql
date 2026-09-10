@@ -1,0 +1,6 @@
+ALTER TABLE invocation_step_executions
+ADD COLUMN runtime_instance_id VARCHAR(255),
+ADD COLUMN result JSONB,
+ADD COLUMN error JSONB,
+ADD COLUMN started_at TIMESTAMP WITH TIME ZONE,
+ADD COLUMN completed_at TIMESTAMP WITH TIME ZONE;

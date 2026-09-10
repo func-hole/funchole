@@ -23,8 +23,8 @@ public class OpenBaoCertificateStore implements CertificateStore {
     private final String baoToken;
 
     public OpenBaoCertificateStore(
-            @Value("${BAO_ADDR}") String baoAddress,
-            @Value("${BAO_TOKEN}") String baoToken
+            @Value("${BAO_ADDR:http://localhost:8200}") String baoAddress,
+            @Value("${BAO_TOKEN:root}") String baoToken
     ) {
         this.httpClient = HttpClient.newHttpClient();
         this.objectMapper = new ObjectMapper();

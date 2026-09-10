@@ -6,6 +6,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Fake, in-memory runtime execution gateway. Proves the handoff boundary for
@@ -19,35 +20,41 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class InMemoryRuntimeExecutionGateway implements RuntimeExecutionGateway {
 
-    private final Map<UUID, RuntimeExecutionAcceptance> acceptancesByExecutionId = new ConcurrentHashMap<>();
+    private final Map<UUID, RuntimeExecutionHandle> handlesByExecutionId = new ConcurrentHashMap<>();
     private final Map<UUID, RuntimeExecutionRequest> requestsByExecutionId = new ConcurrentHashMap<>();
 
     @Override
-    public RuntimeExecutionAcceptance handoff(RuntimeTarget target, RuntimeExecutionRequest request) {
+    public RuntimeExecutionHandle handoff(RuntimeTarget target, RuntimeExecutionRequest request) {
         if (request == null) {
             throw new IllegalArgumentException("Runtime execution request is required");
         }
         if (request.executionId() == null) {
-            return RuntimeExecutionAcceptance.reject(null, "executionId is required");
+            return rejected(null, "executionId is required");
         }
 
-        RuntimeExecutionAcceptance existing = acceptancesByExecutionId.get(request.executionId());
+        RuntimeExecutionHandle existing = handlesByExecutionId.get(request.executionId());
         if (existing != null) {
             return existing;
         }
 
         String rejectionReason = validate(target, request);
         if (rejectionReason != null) {
-            return RuntimeExecutionAcceptance.reject(request.executionId(), rejectionReason);
+            return rejected(request.executionId(), rejectionReason);
         }
 
-        RuntimeExecutionAcceptance acceptance = RuntimeExecutionAcceptance.accept(request.executionId());
-        RuntimeExecutionAcceptance winner = acceptancesByExecutionId.putIfAbsent(request.executionId(), acceptance);
+        RuntimeExecutionHandle handle = new RuntimeExecutionHandle(
+                RuntimeExecutionAcceptance.accept(request.executionId()),
+                CompletableFuture.completedFuture(RuntimeExecutionResult.success(
+                        request.executionId(),
+                        "{\"ok\":true,\"executionId\":\"" + request.executionId() + "\"}"
+                ))
+        );
+        RuntimeExecutionHandle winner = handlesByExecutionId.putIfAbsent(request.executionId(), handle);
         if (winner != null) {
             return winner;
         }
         requestsByExecutionId.put(request.executionId(), request);
-        return acceptance;
+        return handle;
     }
 
     public Optional<RuntimeExecutionRequest> acceptedRequest(UUID executionId) {
@@ -92,5 +99,12 @@ public final class InMemoryRuntimeExecutionGateway implements RuntimeExecutionGa
                     + " is not compatible with request runtime type " + request.runtimeType();
         }
         return null;
+    }
+
+    private RuntimeExecutionHandle rejected(UUID executionId, String reason) {
+        return new RuntimeExecutionHandle(
+                RuntimeExecutionAcceptance.reject(executionId, reason),
+                CompletableFuture.failedFuture(new IllegalStateException(reason))
+        );
     }
 }

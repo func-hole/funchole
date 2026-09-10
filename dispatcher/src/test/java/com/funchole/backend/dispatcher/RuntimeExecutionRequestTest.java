@@ -28,10 +28,15 @@ class RuntimeExecutionRequestTest {
                 UUID.fromString("88888888-8888-8888-8888-888888888861"),
                 UUID.fromString("99999999-9999-9999-9999-999999999861"),
                 "NODE",
+                null,
                 InvocationStepExecutionStatus.READY,
                 1,
+                null,
+                null,
                 OffsetDateTime.now(),
-                OffsetDateTime.now()
+                OffsetDateTime.now(),
+                null,
+                null
         );
         Invocation invocation = new Invocation(
                 INVOCATION_ID,
@@ -66,8 +71,9 @@ class RuntimeExecutionRequestTest {
         UUID componentVersionId = UUID.randomUUID();
         InvocationStepExecution stepExecution = new InvocationStepExecution(
                 EXECUTION_ID, INVOCATION_ID, FLOW_ID, FLOW_VERSION_ID, UUID.randomUUID(), 1,
-                "FUNCTION", componentId, componentVersionId, "NODE",
-                InvocationStepExecutionStatus.READY, 1, OffsetDateTime.now(), OffsetDateTime.now());
+                "FUNCTION", componentId, componentVersionId, "NODE", null,
+                InvocationStepExecutionStatus.READY, 1, null, null,
+                OffsetDateTime.now(), OffsetDateTime.now(), null, null);
         Invocation invocation = invocation("{\"q\":1}");
 
         RuntimeExecutionRequest request = RuntimeExecutionRequest.fromStepExecution(stepExecution, invocation);

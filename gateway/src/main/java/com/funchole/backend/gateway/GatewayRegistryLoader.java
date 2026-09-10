@@ -149,7 +149,7 @@ public final class GatewayRegistryLoader {
                     new ByteArrayInputStream(bundle.certificateChain()),
                     new ByteArrayInputStream(bundle.privateKey())
             ).build();
-            logger.info("Loaded gateway TLS material for {}", record.hostname());
+            logger.debug("Loaded gateway TLS material for {}", record.hostname());
             return new GatewayRuntimeEntry(
                     record.gatewayId(),
                     record.gatewayName(),

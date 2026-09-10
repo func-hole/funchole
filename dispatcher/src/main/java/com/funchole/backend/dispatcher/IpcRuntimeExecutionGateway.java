@@ -36,8 +36,8 @@ import org.slf4j.LoggerFactory;
  * by channel identity or message order - so a channel can safely carry
  * multiple in-flight requests in the future.
  *
- * Only the handoff (INVOKE -> ACCEPTED) is covered here. This gateway does
- * not wait for, or know anything about, Function execution completion.
+ * The handoff waits only for ACCEPTED. RESULT / ERROR is correlated later by
+ * executionId and exposed through a transport-neutral completion future.
  */
 public final class IpcRuntimeExecutionGateway implements RuntimeExecutionGateway, AutoCloseable {
 
@@ -52,7 +52,7 @@ public final class IpcRuntimeExecutionGateway implements RuntimeExecutionGateway
     }
 
     @Override
-    public RuntimeExecutionAcceptance handoff(RuntimeTarget target, RuntimeExecutionRequest request) {
+    public RuntimeExecutionHandle handoff(RuntimeTarget target, RuntimeExecutionRequest request) {
         if (target == null) {
             throw new IllegalArgumentException("Runtime target is required");
         }
@@ -72,10 +72,11 @@ public final class IpcRuntimeExecutionGateway implements RuntimeExecutionGateway
                     "Failed to connect to runtime worker socket " + target.socketPath(), exception);
         }
 
-        CompletableFuture<IpcAcceptedMessage> pending = connection.registerPending(request.executionId());
+        IpcPendingExecution pending = connection.registerPending(request.executionId());
         try {
             connection.writeInvoke(IpcInvokeMessage.from(request));
         } catch (IOException exception) {
+            connection.removePending(request.executionId(), pending);
             connection.close();
             connectionsBySocketPath.remove(target.socketPath(), connection);
             throw new RuntimeIpcException(
@@ -83,20 +84,36 @@ public final class IpcRuntimeExecutionGateway implements RuntimeExecutionGateway
         }
 
         try {
-            IpcAcceptedMessage accepted = pending.get(acceptTimeout.toMillis(), TimeUnit.MILLISECONDS);
-            return RuntimeExecutionAcceptance.accept(accepted.executionId());
+            IpcAcceptedMessage accepted = pending.acceptance().get(acceptTimeout.toMillis(), TimeUnit.MILLISECONDS);
+            return new RuntimeExecutionHandle(
+                    RuntimeExecutionAcceptance.accept(accepted.executionId()),
+                    pending.completion()
+            );
         } catch (TimeoutException exception) {
+            connection.removePending(request.executionId(), pending);
             throw new RuntimeIpcException(
                     "Timed out waiting for ACCEPTED for executionId " + request.executionId(), exception);
         } catch (ExecutionException exception) {
+            connection.removePending(request.executionId(), pending);
             throw new RuntimeIpcException(
                     "IPC connection failed while waiting for ACCEPTED for executionId " + request.executionId(),
                     exception.getCause());
         } catch (InterruptedException exception) {
+            connection.removePending(request.executionId(), pending);
             Thread.currentThread().interrupt();
             throw new RuntimeIpcException(
                     "Interrupted while waiting for ACCEPTED for executionId " + request.executionId(), exception);
         }
+    }
+
+    int pendingAcceptanceCount(String socketPath) {
+        IpcConnection connection = connectionsBySocketPath.get(socketPath);
+        return connection == null ? 0 : connection.pendingAcceptanceCount();
+    }
+
+    int pendingCompletionCount(String socketPath) {
+        IpcConnection connection = connectionsBySocketPath.get(socketPath);
+        return connection == null ? 0 : connection.pendingCompletionCount();
     }
 
     /**
@@ -144,7 +161,8 @@ public final class IpcRuntimeExecutionGateway implements RuntimeExecutionGateway
         private final OutputStream out;
         private final ObjectMapper objectMapper;
         private final Object writeLock = new Object();
-        private final Map<UUID, CompletableFuture<IpcAcceptedMessage>> pending = new ConcurrentHashMap<>();
+        private final Map<UUID, CompletableFuture<IpcAcceptedMessage>> pendingAcceptances = new ConcurrentHashMap<>();
+        private final Map<UUID, CompletableFuture<RuntimeExecutionResult>> pendingCompletions = new ConcurrentHashMap<>();
         private volatile boolean open = true;
 
         private IpcConnection(String socketPath, SocketChannel channel, ObjectMapper objectMapper) {
@@ -166,10 +184,25 @@ public final class IpcRuntimeExecutionGateway implements RuntimeExecutionGateway
             return open && channel.isOpen();
         }
 
-        CompletableFuture<IpcAcceptedMessage> registerPending(UUID executionId) {
-            CompletableFuture<IpcAcceptedMessage> future = new CompletableFuture<>();
-            pending.put(executionId, future);
-            return future;
+        IpcPendingExecution registerPending(UUID executionId) {
+            CompletableFuture<IpcAcceptedMessage> acceptance = new CompletableFuture<>();
+            CompletableFuture<RuntimeExecutionResult> completion = new CompletableFuture<>();
+            pendingAcceptances.put(executionId, acceptance);
+            pendingCompletions.put(executionId, completion);
+            return new IpcPendingExecution(acceptance, completion);
+        }
+
+        void removePending(UUID executionId, IpcPendingExecution pending) {
+            pendingAcceptances.remove(executionId, pending.acceptance());
+            pendingCompletions.remove(executionId, pending.completion());
+        }
+
+        int pendingAcceptanceCount() {
+            return pendingAcceptances.size();
+        }
+
+        int pendingCompletionCount() {
+            return pendingCompletions.size();
         }
 
         void writeInvoke(IpcInvokeMessage message) throws IOException {
@@ -211,18 +244,38 @@ public final class IpcRuntimeExecutionGateway implements RuntimeExecutionGateway
         }
 
         private void handleLine(String line) {
+            String type;
+            try {
+                type = objectMapper.readTree(line).path("type").asText();
+            } catch (IOException exception) {
+                logger.warn("Discarding malformed IPC response on socket {}: {}", socketPath, exception.getMessage());
+                return;
+            }
+
+            if (IpcAcceptedMessage.TYPE.equals(type)) {
+                handleAccepted(line);
+                return;
+            }
+            if (IpcRuntimeTerminalMessage.RESULT.equals(type) || IpcRuntimeTerminalMessage.ERROR.equals(type)) {
+                handleTerminal(line);
+                return;
+            }
+            logger.warn("Discarding unsupported IPC response type '{}' on socket {}", type, socketPath);
+        }
+
+        private void handleAccepted(String line) {
             IpcAcceptedMessage message;
             try {
                 message = objectMapper.readValue(line, IpcAcceptedMessage.class);
             } catch (IOException exception) {
-                logger.warn("Discarding malformed IPC response on socket {}: {}", socketPath, exception.getMessage());
+                logger.warn("Discarding malformed ACCEPTED response on socket {}: {}", socketPath, exception.getMessage());
                 return;
             }
             if (message.executionId() == null) {
                 logger.warn("Discarding IPC response with no executionId on socket {}", socketPath);
                 return;
             }
-            CompletableFuture<IpcAcceptedMessage> future = pending.remove(message.executionId());
+            CompletableFuture<IpcAcceptedMessage> future = pendingAcceptances.remove(message.executionId());
             if (future == null) {
                 logger.warn(
                         "Received ACCEPTED for unknown or already-completed executionId={} on socket {}",
@@ -232,10 +285,40 @@ public final class IpcRuntimeExecutionGateway implements RuntimeExecutionGateway
             future.complete(message);
         }
 
+        private void handleTerminal(String line) {
+            IpcRuntimeTerminalMessage message;
+            try {
+                message = objectMapper.readValue(line, IpcRuntimeTerminalMessage.class);
+            } catch (IOException exception) {
+                logger.warn("Discarding malformed terminal IPC response on socket {}: {}", socketPath, exception.getMessage());
+                return;
+            }
+            if (message.executionId() == null) {
+                logger.warn("Discarding terminal IPC response with no executionId on socket {}", socketPath);
+                return;
+            }
+            CompletableFuture<RuntimeExecutionResult> future = pendingCompletions.remove(message.executionId());
+            if (future == null) {
+                logger.warn(
+                        "Received terminal IPC response for unknown or already-completed executionId={} on socket {}",
+                        message.executionId(), socketPath);
+                return;
+            }
+            future.complete(message.toRuntimeExecutionResult());
+        }
+
         private void failAllPending() {
             RuntimeIpcException failure = new RuntimeIpcException("IPC connection to runtime worker closed: " + socketPath);
-            pending.forEach((executionId, future) -> future.completeExceptionally(failure));
-            pending.clear();
+            pendingAcceptances.forEach((executionId, future) -> future.completeExceptionally(failure));
+            pendingCompletions.forEach((executionId, future) -> future.completeExceptionally(failure));
+            pendingAcceptances.clear();
+            pendingCompletions.clear();
         }
+    }
+
+    private record IpcPendingExecution(
+            CompletableFuture<IpcAcceptedMessage> acceptance,
+            CompletableFuture<RuntimeExecutionResult> completion
+    ) {
     }
 }

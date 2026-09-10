@@ -30,6 +30,7 @@ final class FakeIpcWorker implements AutoCloseable {
 
     enum Behavior {
         ACCEPT,
+        ACCEPT_THEN_ERROR,
         WRONG_EXECUTION_ID,
         SILENT,
         CLOSE_IMMEDIATELY
@@ -107,7 +108,14 @@ final class FakeIpcWorker implements AutoCloseable {
                 receivedExecutionIds.add(executionId);
 
                 switch (behavior) {
-                    case ACCEPT -> respond(out, executionId);
+                    case ACCEPT -> {
+                        respond(out, executionId);
+                        respondResult(out, executionId);
+                    }
+                    case ACCEPT_THEN_ERROR -> {
+                        respond(out, executionId);
+                        respondError(out, executionId);
+                    }
                     case WRONG_EXECUTION_ID -> respond(out, UUID.randomUUID());
                     case SILENT -> {
                         // Deliberately never respond, to exercise the client's accept timeout.
@@ -124,6 +132,20 @@ final class FakeIpcWorker implements AutoCloseable {
 
     private void respond(OutputStream out, UUID executionId) throws IOException {
         String json = "{\"type\":\"ACCEPTED\",\"executionId\":\"" + executionId + "\"}\n";
+        out.write(json.getBytes(StandardCharsets.UTF_8));
+        out.flush();
+    }
+
+    private void respondError(OutputStream out, UUID executionId) throws IOException {
+        String json = "{\"type\":\"ERROR\",\"executionId\":\"" + executionId
+                + "\",\"error\":{\"code\":\"FAKE_RUNTIME_ERROR\",\"message\":\"Simulated runtime failure\"}}\n";
+        out.write(json.getBytes(StandardCharsets.UTF_8));
+        out.flush();
+    }
+
+    private void respondResult(OutputStream out, UUID executionId) throws IOException {
+        String json = "{\"type\":\"RESULT\",\"executionId\":\"" + executionId
+                + "\",\"output\":\"{\\\"ok\\\":true,\\\"executionId\\\":\\\"" + executionId + "\\\"}\"}\n";
         out.write(json.getBytes(StandardCharsets.UTF_8));
         out.flush();
     }

@@ -1,5 +1,7 @@
 package com.funchole.backend.dispatcher;
 
+import java.util.UUID;
+
 /**
  * Durable persistence boundary for planned {@link DispatchableStep}s.
  *
@@ -15,4 +17,10 @@ public interface InvocationStepExecutionRegistry {
      * invocation/step/attempt identity.
      */
     InvocationStepExecution createOrGetReadyExecution(DispatchableStep dispatchableStep);
+
+    InvocationStepExecution markRunning(UUID executionId, String runtimeInstanceId);
+
+    InvocationStepExecutionTransition markCompleted(UUID executionId, RuntimeExecutionResult result);
+
+    InvocationStepExecutionTransition markFailed(UUID executionId, RuntimeExecutionResult result);
 }

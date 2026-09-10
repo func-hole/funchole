@@ -76,15 +76,49 @@ class IpcRuntimeExecutionGatewayTest {
     }
 
     @Test
+    void resultMessageRoundTripsThroughJackson() throws Exception {
+        UUID executionId = UUID.randomUUID();
+        String output = "{\"ok\":true,\"executionId\":\"" + executionId + "\"}";
+
+        String json = OBJECT_MAPPER.writeValueAsString(new IpcRuntimeTerminalMessage("RESULT", executionId, output, null));
+        IpcRuntimeTerminalMessage decoded = OBJECT_MAPPER.readValue(json, IpcRuntimeTerminalMessage.class);
+
+        assertEquals("RESULT", decoded.type());
+        assertEquals(executionId, decoded.executionId());
+        assertEquals(output, decoded.output());
+    }
+
+    @Test
+    void errorMessageRoundTripsThroughJackson() throws Exception {
+        UUID executionId = UUID.randomUUID();
+
+        String json = OBJECT_MAPPER.writeValueAsString(new IpcRuntimeTerminalMessage(
+                "ERROR",
+                executionId,
+                null,
+                new IpcRuntimeErrorPayload("FAKE_RUNTIME_ERROR", "Simulated runtime failure")
+        ));
+        IpcRuntimeTerminalMessage decoded = OBJECT_MAPPER.readValue(json, IpcRuntimeTerminalMessage.class);
+
+        assertEquals("ERROR", decoded.type());
+        assertEquals(executionId, decoded.executionId());
+        assertEquals("FAKE_RUNTIME_ERROR", decoded.error().code());
+        assertEquals("Simulated runtime failure", decoded.error().message());
+    }
+
+    @Test
     void handsOffAndReceivesMatchingAcceptance() throws Exception {
         worker = FakeIpcWorker.start();
         gateway = new IpcRuntimeExecutionGateway(Duration.ofSeconds(2));
         RuntimeExecutionRequest request = validRequest();
 
-        RuntimeExecutionAcceptance acceptance = gateway.handoff(target(worker.socketPath()), request);
+        RuntimeExecutionHandle handle = gateway.handoff(target(worker.socketPath()), request);
+        RuntimeExecutionAcceptance acceptance = handle.acceptance();
 
         assertTrue(acceptance.accepted());
         assertEquals(request.executionId(), acceptance.executionId());
+        assertEquals(request.executionId(), handle.completion().toCompletableFuture()
+                .get(2, java.util.concurrent.TimeUnit.SECONDS).executionId());
         assertEquals(1, worker.receivedExecutionIds().size());
     }
 
@@ -123,12 +157,12 @@ class IpcRuntimeExecutionGatewayTest {
             Future<RuntimeExecutionAcceptance> futureA = clientExecutor.submit(() -> {
                 bothStarted.countDown();
                 bothStarted.await();
-                return gateway.handoff(target, requestA);
+                return gateway.handoff(target, requestA).acceptance();
             });
             Future<RuntimeExecutionAcceptance> futureB = clientExecutor.submit(() -> {
                 bothStarted.countDown();
                 bothStarted.await();
-                return gateway.handoff(target, requestB);
+                return gateway.handoff(target, requestB).acceptance();
             });
 
             RuntimeExecutionAcceptance acceptanceA = futureA.get(10, java.util.concurrent.TimeUnit.SECONDS);
@@ -159,8 +193,11 @@ class IpcRuntimeExecutionGatewayTest {
         worker = FakeIpcWorker.start();
         worker.behave(FakeIpcWorker.Behavior.SILENT);
         gateway = new IpcRuntimeExecutionGateway(Duration.ofMillis(300));
+        RuntimeExecutionRequest request = validRequest();
 
-        assertThrows(RuntimeIpcException.class, () -> gateway.handoff(target(worker.socketPath()), validRequest()));
+        assertThrows(RuntimeIpcException.class, () -> gateway.handoff(target(worker.socketPath()), request));
+        assertEquals(0, gateway.pendingAcceptanceCount(worker.socketPath()));
+        assertEquals(0, gateway.pendingCompletionCount(worker.socketPath()));
     }
 
     @Test

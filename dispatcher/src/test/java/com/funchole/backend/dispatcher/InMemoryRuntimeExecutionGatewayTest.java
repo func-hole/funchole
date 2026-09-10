@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.funchole.backend.runtimeregistry.RuntimeTarget;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 
 class InMemoryRuntimeExecutionGatewayTest {
@@ -13,13 +14,15 @@ class InMemoryRuntimeExecutionGatewayTest {
     private final InMemoryRuntimeExecutionGateway gateway = new InMemoryRuntimeExecutionGateway();
 
     @Test
-    void acceptsCompatibleNodeTargetAndRecordsRequest() {
+    void acceptsCompatibleNodeTargetAndRecordsRequest() throws Exception {
         RuntimeExecutionRequest request = validRequest();
 
-        RuntimeExecutionAcceptance acceptance = gateway.handoff(target("NODE"), request);
+        RuntimeExecutionHandle handle = gateway.handoff(target("NODE"), request);
+        RuntimeExecutionAcceptance acceptance = handle.acceptance();
 
         assertTrue(acceptance.accepted());
         assertEquals(request.executionId(), acceptance.executionId());
+        assertEquals(request.executionId(), handle.completion().toCompletableFuture().get(1, TimeUnit.SECONDS).executionId());
         assertEquals(1, gateway.acceptedCount());
         assertEquals(request, gateway.acceptedRequest(request.executionId()).orElseThrow());
     }
@@ -28,7 +31,7 @@ class InMemoryRuntimeExecutionGatewayTest {
     void rejectsIncompatibleRuntimeTarget() {
         RuntimeExecutionRequest request = validRequest("NODE");
 
-        RuntimeExecutionAcceptance acceptance = gateway.handoff(target("PYTHON"), request);
+        RuntimeExecutionAcceptance acceptance = gateway.handoff(target("PYTHON"), request).acceptance();
 
         assertTrue(!acceptance.accepted());
         assertTrue(acceptance.rejectionReason().contains("not compatible"));
@@ -41,7 +44,7 @@ class InMemoryRuntimeExecutionGatewayTest {
                 null, UUID.randomUUID(), null, null, UUID.randomUUID(), 1,
                 "FUNCTION", UUID.randomUUID(), UUID.randomUUID(), "NODE", "{}");
 
-        RuntimeExecutionAcceptance acceptance = gateway.handoff(target("NODE"), request);
+        RuntimeExecutionAcceptance acceptance = gateway.handoff(target("NODE"), request).acceptance();
 
         assertTrue(!acceptance.accepted());
         assertTrue(acceptance.rejectionReason().contains("executionId is required"));
@@ -53,7 +56,7 @@ class InMemoryRuntimeExecutionGatewayTest {
                 UUID.randomUUID(), UUID.randomUUID(), null, null, UUID.randomUUID(), 1,
                 "FUNCTION", UUID.randomUUID(), null, "NODE", "{}");
 
-        RuntimeExecutionAcceptance acceptance = gateway.handoff(target("NODE"), request);
+        RuntimeExecutionAcceptance acceptance = gateway.handoff(target("NODE"), request).acceptance();
 
         assertTrue(!acceptance.accepted());
         assertTrue(acceptance.rejectionReason().contains("componentVersionId is required"));
@@ -65,7 +68,7 @@ class InMemoryRuntimeExecutionGatewayTest {
                 UUID.randomUUID(), UUID.randomUUID(), null, null, UUID.randomUUID(), 0,
                 "FUNCTION", UUID.randomUUID(), UUID.randomUUID(), "NODE", "{}");
 
-        RuntimeExecutionAcceptance acceptance = gateway.handoff(target("NODE"), request);
+        RuntimeExecutionAcceptance acceptance = gateway.handoff(target("NODE"), request).acceptance();
 
         assertTrue(!acceptance.accepted());
         assertTrue(acceptance.rejectionReason().contains("attempt must be positive"));
@@ -73,7 +76,7 @@ class InMemoryRuntimeExecutionGatewayTest {
 
     @Test
     void rejectsMissingTarget() {
-        RuntimeExecutionAcceptance acceptance = gateway.handoff(null, validRequest("NODE"));
+        RuntimeExecutionAcceptance acceptance = gateway.handoff(null, validRequest("NODE")).acceptance();
 
         assertTrue(!acceptance.accepted());
         assertTrue(acceptance.rejectionReason().contains("Runtime target is required"));
@@ -86,8 +89,8 @@ class InMemoryRuntimeExecutionGatewayTest {
                 first.executionId(), UUID.randomUUID(), null, null, UUID.randomUUID(), 1,
                 "FUNCTION", UUID.randomUUID(), UUID.randomUUID(), "NODE", "{}");
 
-        RuntimeExecutionAcceptance firstAcceptance = gateway.handoff(target("NODE"), first);
-        RuntimeExecutionAcceptance secondAcceptance = gateway.handoff(target("NODE"), second);
+        RuntimeExecutionAcceptance firstAcceptance = gateway.handoff(target("NODE"), first).acceptance();
+        RuntimeExecutionAcceptance secondAcceptance = gateway.handoff(target("NODE"), second).acceptance();
 
         assertTrue(firstAcceptance.accepted());
         assertTrue(secondAcceptance.accepted());

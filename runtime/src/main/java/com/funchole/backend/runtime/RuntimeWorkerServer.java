@@ -16,13 +16,17 @@ import java.nio.file.Path;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
  * The Runtime Worker's IPC server. Listens on a Unix Domain Socket, accepts
  * persistent Dispatcher connections, decodes INVOKE messages, validates and
- * deduplicates them by {@code executionId}, and responds ACCEPTED.
+ * deduplicates them by {@code executionId}, responds ACCEPTED promptly, and
+ * then emits a deterministic fake RESULT or ERROR.
  *
  * This is not a Function execution engine: it only accepts ownership of an
  * execution attempt. It never queries the FuncHole database and never
@@ -39,22 +43,34 @@ public final class RuntimeWorkerServer implements AutoCloseable {
     private final Path socketPath;
     private final String runtimeInstanceId;
     private final String runtimeType;
+    private final RuntimeTerminalMode terminalMode;
+    private final long fakeCompletionDelayMillis;
     private final RuntimeInvokeValidator validator;
     private final ObjectMapper objectMapper = new ObjectMapper();
-    private final Map<UUID, RuntimeInvokeMessage> acceptedByExecutionId = new ConcurrentHashMap<>();
+    private final Map<UUID, WorkerExecutionState> executionsByExecutionId = new ConcurrentHashMap<>();
+    private final ScheduledExecutorService completionExecutor;
     private volatile boolean running = true;
 
     private RuntimeWorkerServer(
             ServerSocketChannel serverChannel,
             Path socketPath,
             String runtimeInstanceId,
-            String runtimeType
+            String runtimeType,
+            RuntimeTerminalMode terminalMode,
+            long fakeCompletionDelayMillis
     ) {
         this.serverChannel = serverChannel;
         this.socketPath = socketPath;
         this.runtimeInstanceId = runtimeInstanceId;
         this.runtimeType = runtimeType;
+        this.terminalMode = terminalMode;
+        this.fakeCompletionDelayMillis = fakeCompletionDelayMillis;
         this.validator = new RuntimeInvokeValidator(runtimeType);
+        this.completionExecutor = Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "runtime-worker-fake-completion-" + runtimeInstanceId);
+            thread.setDaemon(true);
+            return thread;
+        });
     }
 
     /**
@@ -63,10 +79,27 @@ public final class RuntimeWorkerServer implements AutoCloseable {
      * if another process is actually listening on it.
      */
     public static RuntimeWorkerServer bind(Path socketPath, String runtimeInstanceId, String runtimeType) throws IOException {
+        return bind(socketPath, runtimeInstanceId, runtimeType, RuntimeTerminalMode.RESULT, 25);
+    }
+
+    public static RuntimeWorkerServer bind(
+            Path socketPath,
+            String runtimeInstanceId,
+            String runtimeType,
+            RuntimeTerminalMode terminalMode,
+            long fakeCompletionDelayMillis
+    ) throws IOException {
         prepareSocketPath(socketPath);
         ServerSocketChannel serverChannel = ServerSocketChannel.open(StandardProtocolFamily.UNIX);
         serverChannel.bind(UnixDomainSocketAddress.of(socketPath));
-        return new RuntimeWorkerServer(serverChannel, socketPath, runtimeInstanceId, runtimeType);
+        return new RuntimeWorkerServer(
+                serverChannel,
+                socketPath,
+                runtimeInstanceId,
+                runtimeType,
+                terminalMode,
+                fakeCompletionDelayMillis
+        );
     }
 
     /**
@@ -84,16 +117,17 @@ public final class RuntimeWorkerServer implements AutoCloseable {
     }
 
     public int acceptedCount() {
-        return acceptedByExecutionId.size();
+        return executionsByExecutionId.size();
     }
 
     public boolean hasAccepted(UUID executionId) {
-        return acceptedByExecutionId.containsKey(executionId);
+        return executionsByExecutionId.containsKey(executionId);
     }
 
     @Override
     public void close() {
         running = false;
+        completionExecutor.shutdownNow();
         try {
             serverChannel.close();
         } catch (IOException ignored) {
@@ -183,7 +217,10 @@ public final class RuntimeWorkerServer implements AutoCloseable {
             return false;
         }
 
-        boolean firstAcceptance = acceptedByExecutionId.putIfAbsent(message.executionId(), message) == null;
+        WorkerExecutionState executionState = new WorkerExecutionState(message);
+        WorkerExecutionState existing = executionsByExecutionId.putIfAbsent(message.executionId(), executionState);
+        boolean firstAcceptance = existing == null;
+        WorkerExecutionState state = firstAcceptance ? executionState : existing;
         if (firstAcceptance) {
             logger.info(
                     "Runtime invocation accepted: executionId={}, invocationId={}, stepId={}, componentVersionId={}",
@@ -196,9 +233,74 @@ public final class RuntimeWorkerServer implements AutoCloseable {
             logger.debug("Duplicate INVOKE for already-accepted executionId={}", message.executionId());
         }
 
-        String json = objectMapper.writeValueAsString(RuntimeAcceptedMessage.of(message.executionId()));
-        out.write((json + "\n").getBytes(StandardCharsets.UTF_8));
-        out.flush();
+        writeJson(out, RuntimeAcceptedMessage.of(message.executionId()));
+        if (firstAcceptance) {
+            scheduleFakeCompletion(state, out);
+        } else if (state.terminalMessage() != null) {
+            writeJson(out, state.terminalMessage());
+        }
         return true;
+    }
+
+    private void scheduleFakeCompletion(WorkerExecutionState state, OutputStream out) {
+        completionExecutor.schedule(
+                () -> completeFakeExecution(state, out),
+                fakeCompletionDelayMillis,
+                TimeUnit.MILLISECONDS
+        );
+    }
+
+    private void completeFakeExecution(WorkerExecutionState state, OutputStream out) {
+        RuntimeTerminalMessage terminalMessage = terminalMode == RuntimeTerminalMode.ERROR
+                ? RuntimeTerminalMessage.error(state.message().executionId())
+                : RuntimeTerminalMessage.result(state.message().executionId());
+        if (!state.complete(terminalMessage)) {
+            return;
+        }
+
+        try {
+            writeJson(out, terminalMessage);
+            logger.info(
+                    "Runtime execution completed: executionId={}, type={}",
+                    terminalMessage.executionId(),
+                    terminalMessage.type()
+            );
+        } catch (IOException exception) {
+            logger.warn("Failed to write terminal runtime message for executionId={}: {}",
+                    terminalMessage.executionId(), exception.getMessage());
+        }
+    }
+
+    private void writeJson(OutputStream out, Object message) throws IOException {
+        synchronized (out) {
+            String json = objectMapper.writeValueAsString(message);
+            out.write((json + "\n").getBytes(StandardCharsets.UTF_8));
+            out.flush();
+        }
+    }
+
+    private static final class WorkerExecutionState {
+        private final RuntimeInvokeMessage message;
+        private volatile RuntimeTerminalMessage terminalMessage;
+
+        private WorkerExecutionState(RuntimeInvokeMessage message) {
+            this.message = message;
+        }
+
+        private RuntimeInvokeMessage message() {
+            return message;
+        }
+
+        private RuntimeTerminalMessage terminalMessage() {
+            return terminalMessage;
+        }
+
+        private synchronized boolean complete(RuntimeTerminalMessage terminalMessage) {
+            if (this.terminalMessage != null) {
+                return false;
+            }
+            this.terminalMessage = terminalMessage;
+            return true;
+        }
     }
 }
