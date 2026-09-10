@@ -23,6 +23,9 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,6 +42,21 @@ public final class InvocationDispatcher {
     private final ExecutionPlanner executionPlanner;
     private final RuntimeExecutionGateway executionGateway;
     private final JetStreamSubscription subscription;
+
+    /**
+     * Terminal RESULT/ERROR messages are correlated and completed on the IPC
+     * transport's own reader thread (see {@link IpcRuntimeExecutionGateway}).
+     * That thread must stay free to keep decoding/correlating frames for
+     * other in-flight executions, so the blocking JDBC terminal-state
+     * transition (and the runtime capacity release that follows it) is
+     * dispatched onto this small, bounded, dedicated pool instead of running
+     * inline on whichever thread completes the completion future.
+     */
+    private final ExecutorService completionExecutor = Executors.newFixedThreadPool(2, runnable -> {
+        Thread thread = new Thread(runnable, "dispatcher-completion");
+        thread.setDaemon(true);
+        return thread;
+    });
 
     public InvocationDispatcher(
             Connection connection,
@@ -196,7 +214,7 @@ public final class InvocationDispatcher {
             RuntimeTarget runtimeTarget,
             RuntimeExecutionHandle handle
     ) {
-        handle.completion().whenComplete((result, failure) -> {
+        handle.completion().whenCompleteAsync((result, failure) -> {
             if (failure != null) {
                 logger.warn(
                         "Runtime completion failed before terminal message: executionId={}, runtimeInstanceId={}, message={}",
@@ -207,7 +225,7 @@ public final class InvocationDispatcher {
                 return;
             }
             handleTerminalResult(result, runtimeTarget);
-        });
+        }, completionExecutor);
     }
 
     private void handleTerminalResult(RuntimeExecutionResult result, RuntimeTarget runtimeTarget) {
@@ -245,6 +263,20 @@ public final class InvocationDispatcher {
                     runtimeTarget.runtimeInstanceId(),
                     exception.getMessage()
             );
+        }
+    }
+
+    /**
+     * Stops accepting new terminal completions. Intended for orderly
+     * Dispatcher shutdown; safe to skip since the pool only holds daemon
+     * threads.
+     */
+    public void close() {
+        completionExecutor.shutdown();
+        try {
+            completionExecutor.awaitTermination(5, TimeUnit.SECONDS);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
         }
     }
 

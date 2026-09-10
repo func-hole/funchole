@@ -22,6 +22,7 @@ import java.sql.Statement;
 import java.time.Duration;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.BooleanSupplier;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -292,6 +293,10 @@ class InvocationDispatcherTest {
         assertEquals("NODE", step.runtimeType());
         assertFalse(dispatcher.processNext(Duration.ofMillis(500)));
 
+        awaitCondition(
+                () -> stepExecutionRegistry.createOrGetReadyExecution(step).status() == InvocationStepExecutionStatus.COMPLETED,
+                Duration.ofSeconds(5)
+        );
         InvocationStepExecution execution = stepExecutionRegistry.createOrGetReadyExecution(step);
         assertEquals(InvocationStepExecutionStatus.COMPLETED, execution.status());
         assertEquals(1, execution.attempt());
@@ -425,7 +430,10 @@ class InvocationDispatcherTest {
         assertEquals(1, request.attempt());
         assertEquals("{\"path\": \"/orders\"}", request.input());
         assertEquals("NODE", target.runtimeType());
-        assertEquals(0, runtimeRegistry.find(DEV_RUNTIME_INSTANCE_ID).orElseThrow().inFlight());
+        awaitCondition(
+                () -> runtimeRegistry.find(DEV_RUNTIME_INSTANCE_ID).orElseThrow().inFlight() == 0,
+                Duration.ofSeconds(5)
+        );
         assertFalse(dispatcher.processNext(Duration.ofMillis(500)));
     }
 
@@ -524,7 +532,10 @@ class InvocationDispatcherTest {
 
             assertTrue(dispatcher.processNext(Duration.ofSeconds(5)));
 
-            assertEquals(0, ipcRuntimeRegistry.find("runtime-node-ipc").orElseThrow().inFlight());
+            awaitCondition(
+                    () -> ipcRuntimeRegistry.find("runtime-node-ipc").orElseThrow().inFlight() == 0,
+                    Duration.ofSeconds(5)
+            );
             assertEquals(1, worker.receivedExecutionIds().size());
         }
     }
@@ -551,10 +562,12 @@ class InvocationDispatcherTest {
         InMemoryRuntimeRegistry singleCapacityRegistry = new InMemoryRuntimeRegistry();
         singleCapacityRegistry.register(new RuntimeInstance(
                 "runtime-node-single", "NODE", RuntimeInstanceStatus.AVAILABLE, 1, 0, "/tmp/test-single.sock"));
+        TerminalFailingInvocationStepExecutionRegistry terminalFailingRegistry =
+                new TerminalFailingInvocationStepExecutionRegistry(stepExecutionRegistry);
         InvocationDispatcher dispatcher = new InvocationDispatcher(
                 natsConnection,
                 invocationRegistry,
-                new TerminalFailingInvocationStepExecutionRegistry(stepExecutionRegistry),
+                terminalFailingRegistry,
                 singleCapacityRegistry,
                 new ExecutionPlanner(),
                 new InMemoryRuntimeExecutionGateway()
@@ -562,6 +575,7 @@ class InvocationDispatcherTest {
 
         assertTrue(dispatcher.processNext(Duration.ofSeconds(5)));
 
+        awaitCondition(() -> terminalFailingRegistry.terminalAttemptCount() > 0, Duration.ofSeconds(5));
         assertEquals(1, singleCapacityRegistry.find("runtime-node-single").orElseThrow().inFlight());
     }
 
@@ -596,6 +610,45 @@ class InvocationDispatcherTest {
             assertFalse(dispatcher.processNext(Duration.ofSeconds(5)));
 
             assertEquals(0, ipcRuntimeRegistry.find("runtime-node-ipc-down").orElseThrow().inFlight());
+        }
+    }
+
+    @Test
+    void terminalPersistenceRunsOnDispatcherCompletionExecutorNotIpcReaderThread() throws Exception {
+        UUID flowId = UUID.fromString("10000000-0000-0000-0000-000000000221");
+        UUID flowVersionId = UUID.fromString("20000000-0000-0000-0000-000000000221");
+        insertFlow(flowId, "flw_orders_list", flowVersionId, 1);
+        insertStep(
+                flowVersionId,
+                "validate-orders-request",
+                "FUNCTION",
+                1,
+                UUID.fromString("30000000-0000-0000-0000-000000000221"),
+                UUID.fromString("40000000-0000-0000-0000-000000000221")
+        );
+        invocationRegistry.create(new CreateInvocationRequest(
+                flowId,
+                "flw_orders_list",
+                flowVersionId,
+                "{\"path\":\"/orders\"}"
+        ));
+        try (FakeIpcWorker worker = FakeIpcWorker.start(); IpcRuntimeExecutionGateway ipcGateway = new IpcRuntimeExecutionGateway(Duration.ofSeconds(2))) {
+            InMemoryRuntimeRegistry ipcRuntimeRegistry = new InMemoryRuntimeRegistry();
+            ipcRuntimeRegistry.register(new RuntimeInstance(
+                    "runtime-node-thread-check", "NODE", RuntimeInstanceStatus.AVAILABLE, 1, 0, worker.socketPath()));
+            ThreadCapturingInvocationStepExecutionRegistry threadCapturingRegistry =
+                    new ThreadCapturingInvocationStepExecutionRegistry(stepExecutionRegistry);
+            InvocationDispatcher dispatcher = new InvocationDispatcher(
+                    natsConnection, invocationRegistry, threadCapturingRegistry, ipcRuntimeRegistry,
+                    new ExecutionPlanner(), ipcGateway
+            );
+
+            assertTrue(dispatcher.processNext(Duration.ofSeconds(5)));
+
+            awaitCondition(() -> threadCapturingRegistry.terminalThreadName() != null, Duration.ofSeconds(5));
+            String terminalThreadName = threadCapturingRegistry.terminalThreadName();
+            assertTrue(terminalThreadName.startsWith("dispatcher-completion"));
+            assertTrue(!terminalThreadName.contains("ipc-runtime-gateway"));
         }
     }
 
@@ -686,6 +739,24 @@ class InvocationDispatcherTest {
         }
     }
 
+    /**
+     * Terminal RESULT/ERROR handling now always completes asynchronously on
+     * {@link InvocationDispatcher}'s own completion executor (see the
+     * Section-0 fix), never inline on the calling/reader thread - so tests
+     * must poll for the eventual state rather than asserting immediately
+     * after {@code processNext} returns.
+     */
+    private void awaitCondition(BooleanSupplier condition, Duration timeout) throws InterruptedException {
+        long deadlineMillis = System.currentTimeMillis() + timeout.toMillis();
+        while (System.currentTimeMillis() < deadlineMillis) {
+            if (condition.getAsBoolean()) {
+                return;
+            }
+            Thread.sleep(20);
+        }
+        throw new AssertionError("Condition not met within " + timeout);
+    }
+
     private int countStepExecutions() throws Exception {
         try (
                 var connection = dataSource().getConnection();
@@ -754,9 +825,14 @@ class InvocationDispatcherTest {
     private static final class TerminalFailingInvocationStepExecutionRegistry implements InvocationStepExecutionRegistry {
 
         private final InvocationStepExecutionRegistry delegate;
+        private final java.util.concurrent.atomic.AtomicInteger terminalAttemptCount = new java.util.concurrent.atomic.AtomicInteger();
 
         private TerminalFailingInvocationStepExecutionRegistry(InvocationStepExecutionRegistry delegate) {
             this.delegate = delegate;
+        }
+
+        int terminalAttemptCount() {
+            return terminalAttemptCount.get();
         }
 
         @Override
@@ -771,12 +847,50 @@ class InvocationDispatcherTest {
 
         @Override
         public InvocationStepExecutionTransition markCompleted(UUID executionId, RuntimeExecutionResult result) {
+            terminalAttemptCount.incrementAndGet();
             throw new IllegalStateException("Simulated terminal persistence failure");
         }
 
         @Override
         public InvocationStepExecutionTransition markFailed(UUID executionId, RuntimeExecutionResult result) {
+            terminalAttemptCount.incrementAndGet();
             throw new IllegalStateException("Simulated terminal persistence failure");
+        }
+    }
+
+    private static final class ThreadCapturingInvocationStepExecutionRegistry implements InvocationStepExecutionRegistry {
+
+        private final InvocationStepExecutionRegistry delegate;
+        private volatile String terminalThreadName;
+
+        private ThreadCapturingInvocationStepExecutionRegistry(InvocationStepExecutionRegistry delegate) {
+            this.delegate = delegate;
+        }
+
+        String terminalThreadName() {
+            return terminalThreadName;
+        }
+
+        @Override
+        public InvocationStepExecution createOrGetReadyExecution(DispatchableStep dispatchableStep) {
+            return delegate.createOrGetReadyExecution(dispatchableStep);
+        }
+
+        @Override
+        public InvocationStepExecution markRunning(UUID executionId, String runtimeInstanceId) {
+            return delegate.markRunning(executionId, runtimeInstanceId);
+        }
+
+        @Override
+        public InvocationStepExecutionTransition markCompleted(UUID executionId, RuntimeExecutionResult result) {
+            terminalThreadName = Thread.currentThread().getName();
+            return delegate.markCompleted(executionId, result);
+        }
+
+        @Override
+        public InvocationStepExecutionTransition markFailed(UUID executionId, RuntimeExecutionResult result) {
+            terminalThreadName = Thread.currentThread().getName();
+            return delegate.markFailed(executionId, result);
         }
     }
 

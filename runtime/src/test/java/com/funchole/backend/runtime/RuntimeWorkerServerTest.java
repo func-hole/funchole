@@ -16,19 +16,39 @@ import java.net.UnixDomainSocketAddress;
 import java.nio.channels.Channels;
 import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.UUID;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 class RuntimeWorkerServerTest {
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final Path NODE_SCRIPT_PATH = Path.of("node", "executor.mjs").toAbsolutePath();
+
+    private static PersistentNodeExecutor nodeExecutor;
+
+    @TempDir
+    Path artifactsRoot;
 
     private Path socketPath;
     private RuntimeWorkerServer server;
+
+    @BeforeAll
+    static void startNodeExecutor() throws Exception {
+        nodeExecutor = PersistentNodeExecutor.start("node", NODE_SCRIPT_PATH);
+    }
+
+    @AfterAll
+    static void stopNodeExecutor() {
+        nodeExecutor.close();
+    }
 
     @BeforeEach
     void setUp() throws Exception {
@@ -36,7 +56,8 @@ class RuntimeWorkerServerTest {
         // deliberately avoids Files.createTempDirectory() - the default JDK temp
         // directory (e.g. macOS's /var/folders/.../T/) is often already too long.
         socketPath = Path.of("/tmp", "fh-worker-test-" + UUID.randomUUID().toString().substring(0, 8) + ".sock");
-        server = RuntimeWorkerServer.bind(socketPath, "runtime-node-test-1", "NODE");
+        ArtifactResolver artifactResolver = new DirectoryArtifactResolver(artifactsRoot, "NODE");
+        server = RuntimeWorkerServer.bind(socketPath, "runtime-node-test-1", "NODE", artifactResolver, nodeExecutor);
         server.start();
     }
 
@@ -84,10 +105,12 @@ class RuntimeWorkerServerTest {
 
     @Test
     void acceptsValidInvokeAndReturnsMatchingAccepted() throws Exception {
+        UUID componentId = UUID.randomUUID();
+        UUID componentVersionId = writeSuccessArtifact();
         UUID executionId = UUID.randomUUID();
 
         try (TestClient client = TestClient.connect(socketPath)) {
-            client.sendInvoke(executionId, "NODE");
+            client.sendInvoke(executionId, "NODE", componentId, componentVersionId, "{}");
             String response = client.readLine();
 
             RuntimeAcceptedMessage accepted = OBJECT_MAPPER.readValue(response, RuntimeAcceptedMessage.class);
@@ -98,31 +121,35 @@ class RuntimeWorkerServerTest {
     }
 
     @Test
-    void sendsFakeResultAfterAccepted() throws Exception {
+    void executesRealArtifactAndReturnsRealResult() throws Exception {
+        UUID componentId = UUID.randomUUID();
+        UUID componentVersionId = writeSuccessArtifact();
         UUID executionId = UUID.randomUUID();
 
         try (TestClient client = TestClient.connect(socketPath)) {
-            client.sendInvoke(executionId, "NODE");
+            client.sendInvoke(executionId, "NODE", componentId, componentVersionId, "{\"path\":\"/orders\"}");
             RuntimeAcceptedMessage accepted = OBJECT_MAPPER.readValue(client.readLine(), RuntimeAcceptedMessage.class);
             RuntimeTerminalMessage result = OBJECT_MAPPER.readValue(client.readLine(), RuntimeTerminalMessage.class);
 
             assertEquals(executionId, accepted.executionId());
             assertEquals("RESULT", result.type());
             assertEquals(executionId, result.executionId());
-            assertNotNull(result.output());
             assertNull(result.error());
+            assertEquals(
+                    "{\"ok\":true,\"input\":{\"path\":\"/orders\"}}",
+                    result.output()
+            );
         }
     }
 
     @Test
-    void canSendFakeErrorAfterAccepted() throws Exception {
-        server.close();
-        server = RuntimeWorkerServer.bind(socketPath, "runtime-node-test-1", "NODE", RuntimeTerminalMode.ERROR, 1);
-        server.start();
+    void realArtifactFailureProducesRealError() throws Exception {
+        UUID componentId = UUID.randomUUID();
+        UUID componentVersionId = writeThrowingArtifact();
         UUID executionId = UUID.randomUUID();
 
         try (TestClient client = TestClient.connect(socketPath)) {
-            client.sendInvoke(executionId, "NODE");
+            client.sendInvoke(executionId, "NODE", componentId, componentVersionId, "{}");
             RuntimeAcceptedMessage accepted = OBJECT_MAPPER.readValue(client.readLine(), RuntimeAcceptedMessage.class);
             RuntimeTerminalMessage error = OBJECT_MAPPER.readValue(client.readLine(), RuntimeTerminalMessage.class);
 
@@ -130,28 +157,86 @@ class RuntimeWorkerServerTest {
             assertEquals("ERROR", error.type());
             assertEquals(executionId, error.executionId());
             assertNull(error.output());
-            assertEquals("FAKE_RUNTIME_ERROR", error.error().code());
-            assertEquals("Simulated runtime failure", error.error().message());
+            assertEquals("ARTIFACT_EXECUTION_ERROR", error.error().code());
+            assertEquals("simulated artifact failure", error.error().message());
         }
     }
 
     @Test
-    void deduplicatesRepeatedExecutionIdWithinProcessLifetime() throws Exception {
+    void missingArtifactMappingProducesArtifactNotFoundError() throws Exception {
         UUID executionId = UUID.randomUUID();
 
         try (TestClient client = TestClient.connect(socketPath)) {
-            client.sendInvoke(executionId, "NODE");
-            String firstResponse = client.readLine();
+            client.sendInvoke(executionId, "NODE", UUID.randomUUID(), UUID.randomUUID(), "{}");
             client.readLine();
-            client.sendInvoke(executionId, "NODE");
-            String secondResponse = client.readLine();
-            String replayedTerminal = client.readLine();
+            RuntimeTerminalMessage error = OBJECT_MAPPER.readValue(client.readLine(), RuntimeTerminalMessage.class);
 
-            assertEquals(executionId, OBJECT_MAPPER.readValue(firstResponse, RuntimeAcceptedMessage.class).executionId());
-            assertEquals(executionId, OBJECT_MAPPER.readValue(secondResponse, RuntimeAcceptedMessage.class).executionId());
-            assertEquals(executionId, OBJECT_MAPPER.readValue(replayedTerminal, RuntimeTerminalMessage.class).executionId());
+            assertEquals("ERROR", error.type());
+            assertEquals("ARTIFACT_NOT_FOUND", error.error().code());
+        }
+    }
+
+    @Test
+    void deduplicatesRepeatedExecutionIdWhileExecutingAndInvokesHandlerExactlyOnce() throws Exception {
+        UUID componentId = UUID.randomUUID();
+        UUID componentVersionId = writeSlowCountingArtifact();
+        UUID executionId = UUID.randomUUID();
+
+        try (TestClient first = TestClient.connect(socketPath); TestClient second = TestClient.connect(socketPath)) {
+            first.sendInvoke(executionId, "NODE", componentId, componentVersionId, "{}");
+            RuntimeAcceptedMessage firstAccepted = OBJECT_MAPPER.readValue(first.readLine(), RuntimeAcceptedMessage.class);
+
+            second.sendInvoke(executionId, "NODE", componentId, componentVersionId, "{}");
+            RuntimeAcceptedMessage secondAccepted = OBJECT_MAPPER.readValue(second.readLine(), RuntimeAcceptedMessage.class);
+
+            RuntimeTerminalMessage result = OBJECT_MAPPER.readValue(
+                    assertTimeoutPreemptively(Duration.ofSeconds(5), first::readLine), RuntimeTerminalMessage.class);
+
+            assertEquals(executionId, firstAccepted.executionId());
+            assertEquals(executionId, secondAccepted.executionId());
+            assertEquals("RESULT", result.type());
+            assertEquals("{\"invocationCount\":1}", result.output());
+        }
+    }
+
+    @Test
+    void deduplicatesRepeatedExecutionIdAfterResultAndReplaysIt() throws Exception {
+        UUID componentId = UUID.randomUUID();
+        UUID componentVersionId = writeSuccessArtifact();
+        UUID executionId = UUID.randomUUID();
+
+        try (TestClient client = TestClient.connect(socketPath)) {
+            client.sendInvoke(executionId, "NODE", componentId, componentVersionId, "{}");
+            client.readLine();
+            String firstResult = client.readLine();
+
+            client.sendInvoke(executionId, "NODE", componentId, componentVersionId, "{}");
+            String secondAccepted = client.readLine();
+            String replayedResult = client.readLine();
+
+            assertEquals(executionId, OBJECT_MAPPER.readValue(secondAccepted, RuntimeAcceptedMessage.class).executionId());
+            assertEquals(firstResult, replayedResult);
         }
         assertEquals(1, server.acceptedCount());
+    }
+
+    @Test
+    void deduplicatesRepeatedExecutionIdAfterErrorAndReplaysIt() throws Exception {
+        UUID componentId = UUID.randomUUID();
+        UUID componentVersionId = writeThrowingArtifact();
+        UUID executionId = UUID.randomUUID();
+
+        try (TestClient client = TestClient.connect(socketPath)) {
+            client.sendInvoke(executionId, "NODE", componentId, componentVersionId, "{}");
+            client.readLine();
+            String firstError = client.readLine();
+
+            client.sendInvoke(executionId, "NODE", componentId, componentVersionId, "{}");
+            client.readLine();
+            String replayedError = client.readLine();
+
+            assertEquals(firstError, replayedError);
+        }
     }
 
     @Test
@@ -159,7 +244,7 @@ class RuntimeWorkerServerTest {
         UUID executionId = UUID.randomUUID();
 
         try (TestClient client = TestClient.connect(socketPath)) {
-            client.sendInvoke(executionId, "PYTHON");
+            client.sendInvoke(executionId, "PYTHON", UUID.randomUUID(), UUID.randomUUID(), "{}");
             String response = assertTimeoutPreemptively(Duration.ofSeconds(2), client::readLine);
             assertNull(response);
         }
@@ -177,19 +262,65 @@ class RuntimeWorkerServerTest {
 
     @Test
     void singleConnectionAcceptsMultipleSequentialInvokes() throws Exception {
+        // A slightly delayed artifact keeps ACCEPTED deterministically ahead of
+        // RESULT on the wire, since with real (fast, synchronous) artifact
+        // resolution an immediate artifact could otherwise write its RESULT
+        // before this test reads the second invoke's ACCEPTED line.
+        UUID componentId = UUID.randomUUID();
+        UUID componentVersionId = writeDelayedArtifact();
         UUID first = UUID.randomUUID();
         UUID second = UUID.randomUUID();
 
         try (TestClient client = TestClient.connect(socketPath)) {
-            client.sendInvoke(first, "NODE");
+            client.sendInvoke(first, "NODE", componentId, componentVersionId, "{}");
             RuntimeAcceptedMessage firstAccepted = OBJECT_MAPPER.readValue(client.readLine(), RuntimeAcceptedMessage.class);
-            client.sendInvoke(second, "NODE");
+            client.sendInvoke(second, "NODE", componentId, componentVersionId, "{}");
             RuntimeAcceptedMessage secondAccepted = OBJECT_MAPPER.readValue(client.readLine(), RuntimeAcceptedMessage.class);
 
             assertEquals(first, firstAccepted.executionId());
             assertEquals(second, secondAccepted.executionId());
         }
         assertEquals(2, server.acceptedCount());
+    }
+
+    private UUID writeSuccessArtifact() throws IOException {
+        return writeArtifact("export async function handler(input) { return { ok: true, input }; }");
+    }
+
+    private UUID writeThrowingArtifact() throws IOException {
+        return writeArtifact("""
+                export async function handler(input) {
+                    throw new Error("simulated artifact failure");
+                }
+                """);
+    }
+
+    private UUID writeDelayedArtifact() throws IOException {
+        return writeArtifact("""
+                export async function handler(input) {
+                    await new Promise((resolve) => setTimeout(resolve, 300));
+                    return { ok: true };
+                }
+                """);
+    }
+
+    private UUID writeSlowCountingArtifact() throws IOException {
+        return writeArtifact("""
+                let invocationCount = 0;
+                export async function handler(input) {
+                    invocationCount++;
+                    await new Promise((resolve) => setTimeout(resolve, 300));
+                    return { invocationCount };
+                }
+                """);
+    }
+
+    private UUID writeArtifact(String source) throws IOException {
+        UUID componentVersionId = UUID.randomUUID();
+        Path directory = artifactsRoot.resolve(componentVersionId.toString());
+        Files.createDirectories(directory);
+        Files.writeString(directory.resolve("index.mjs"), source);
+        return componentVersionId;
     }
 
     private static final class TestClient implements AutoCloseable {
@@ -209,12 +340,13 @@ class RuntimeWorkerServerTest {
             return new TestClient(channel);
         }
 
-        void sendInvoke(UUID executionId, String runtimeType) throws IOException {
+        void sendInvoke(UUID executionId, String runtimeType, UUID componentId, UUID componentVersionId, String input) throws IOException {
+            String escapedInput = input.replace("\\", "\\\\").replace("\"", "\\\"");
             String json = """
                     {"type":"INVOKE","executionId":"%s","payload":{"invocationId":"%s","flowId":null,"flowVersionId":null,\
                     "stepId":"%s","attempt":1,"componentType":"FUNCTION","componentId":"%s","componentVersionId":"%s",\
-                    "runtimeType":"%s","input":"{}"}}
-                    """.formatted(executionId, UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), runtimeType);
+                    "runtimeType":"%s","input":"%s"}}
+                    """.formatted(executionId, UUID.randomUUID(), UUID.randomUUID(), componentId, componentVersionId, runtimeType, escapedInput);
             sendRaw(json.strip());
         }
 

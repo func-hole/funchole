@@ -15,19 +15,26 @@ public final class RuntimeWorkerMain {
         Path socketPath = Path.of(readString("RUNTIME_WORKER_SOCKET_PATH", "/tmp/funchole/runtime-node-dev-1.sock"));
         String runtimeInstanceId = readString("RUNTIME_INSTANCE_ID", "runtime-node-dev-1");
         String runtimeType = readString("RUNTIME_TYPE", "NODE");
-        RuntimeTerminalMode terminalMode = RuntimeTerminalMode.valueOf(readString("RUNTIME_FAKE_TERMINAL_MODE", "RESULT"));
-        long fakeCompletionDelayMillis = readLong("RUNTIME_FAKE_COMPLETION_DELAY_MS", 25);
+        Path artifactsRoot = Path.of(readString("ARTIFACT_DIR", "artifacts/dev"));
+        String nodeCommand = readString("NODE_COMMAND", "node");
+        Path nodeExecutorScript = Path.of(readString("NODE_EXECUTOR_SCRIPT_PATH", "node/executor.mjs"));
+
+        ArtifactResolver artifactResolver = new DirectoryArtifactResolver(artifactsRoot, runtimeType);
+        PersistentNodeExecutor nodeExecutor = PersistentNodeExecutor.start(nodeCommand, nodeExecutorScript);
 
         RuntimeWorkerServer server = RuntimeWorkerServer.bind(
                 socketPath,
                 runtimeInstanceId,
                 runtimeType,
-                terminalMode,
-                fakeCompletionDelayMillis
+                artifactResolver,
+                nodeExecutor
         );
         server.start();
 
-        Runtime.getRuntime().addShutdownHook(new Thread(server::close));
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            server.close();
+            nodeExecutor.close();
+        }));
 
         logger.info("Runtime worker running. Press Ctrl+C to stop.");
         new CountDownLatch(1).await();
@@ -36,13 +43,5 @@ public final class RuntimeWorkerMain {
     private static String readString(String name, String fallback) {
         String value = System.getenv(name);
         return value == null || value.isBlank() ? fallback : value;
-    }
-
-    private static long readLong(String name, long fallback) {
-        String value = System.getenv(name);
-        if (value == null || value.isBlank()) {
-            return fallback;
-        }
-        return Long.parseLong(value);
     }
 }

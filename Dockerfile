@@ -47,6 +47,11 @@ RUN apt-get update \
 COPY docker/openbao-common.sh /opt/funchole/openbao-common.sh
 RUN chmod +x /opt/funchole/openbao-common.sh
 
+FROM runtime-base AS runtime-node-base
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
 FROM runtime-base AS controlplane
 COPY --from=build-controlplane /workspace/controlplane/build/libs/funchole-controlplane.jar app.jar
 COPY docker/controlplane-entrypoint.sh /opt/funchole/entrypoint.sh
@@ -65,8 +70,12 @@ FROM runtime-base AS dispatcher
 COPY --from=build-dispatcher /workspace/dispatcher/build/libs/funchole-dispatcher.jar app.jar
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]
 
-FROM runtime-base AS runtime-worker
+FROM runtime-node-base AS runtime-worker
 COPY --from=build-runtime /workspace/runtime/build/libs/funchole-runtime.jar app.jar
+COPY runtime/node /app/node
+COPY runtime/artifacts /app/artifacts
+ENV NODE_EXECUTOR_SCRIPT_PATH=/app/node/executor.mjs
+ENV ARTIFACT_DIR=/app/artifacts/dev
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]
 
 FROM node:22-alpine AS build-web
@@ -94,6 +103,8 @@ WORKDIR /workspace
 ENV GRADLE_USER_HOME=/opt/gradle-home
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl jq \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 COPY gradlew gradlew.bat settings.gradle build.gradle gradle.properties /workspace/
 COPY gradle /workspace/gradle

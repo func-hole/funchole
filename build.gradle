@@ -32,6 +32,20 @@ subprojects {
     apply plugin: 'jacoco'
     apply plugin: 'io.spring.dependency-management'
 
+    // Each dev-compose service bind-mounts the same host workspace and runs
+    // its own independent Gradle process with its own --project-cache-dir,
+    // but by default all of them still write shared modules' compiled
+    // output (e.g. :core, :certificate) into the SAME in-tree build/
+    // directory. Two containers compiling the same module at once can then
+    // race and corrupt each other's generated sources. When
+    // FUNCHOLE_BUILD_DIR_ROOT is set (only in the dev containers - see
+    // docker/*-dev-entrypoint.sh), redirect this subproject's build output
+    // to a container-local path outside the shared bind mount instead.
+    String isolatedBuildRoot = System.getenv('FUNCHOLE_BUILD_DIR_ROOT')
+    if (isolatedBuildRoot) {
+        layout.buildDirectory.set(file("${isolatedBuildRoot}/${project.name}"))
+    }
+
     java {
         toolchain {
             languageVersion = JavaLanguageVersion.of(25)

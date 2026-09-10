@@ -8,21 +8,20 @@ record RuntimeTerminalMessage(
         String output,
         RuntimeErrorPayload error
 ) {
-    static RuntimeTerminalMessage result(UUID executionId) {
-        return new RuntimeTerminalMessage(
-                RuntimeTerminalMode.RESULT.name(),
-                executionId,
-                "{\"ok\":true,\"executionId\":\"" + executionId + "\"}",
-                null
-        );
+    static final String RESULT = "RESULT";
+    static final String ERROR = "ERROR";
+
+    static RuntimeTerminalMessage result(UUID executionId, String output) {
+        return new RuntimeTerminalMessage(RESULT, executionId, output, null);
     }
 
-    static RuntimeTerminalMessage error(UUID executionId) {
-        return new RuntimeTerminalMessage(
-                RuntimeTerminalMode.ERROR.name(),
-                executionId,
-                null,
-                new RuntimeErrorPayload("FAKE_RUNTIME_ERROR", "Simulated runtime failure")
-        );
+    static RuntimeTerminalMessage error(UUID executionId, String code, String message) {
+        return new RuntimeTerminalMessage(ERROR, executionId, null, new RuntimeErrorPayload(code, message));
+    }
+
+    static RuntimeTerminalMessage from(NodeExecutionResult result) {
+        return result.success()
+                ? result(result.executionId(), result.output())
+                : error(result.executionId(), result.errorCode(), result.errorMessage());
     }
 }

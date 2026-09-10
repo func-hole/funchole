@@ -38,6 +38,7 @@ public final class DispatcherMain {
         Duration pollTimeout = Duration.ofMillis(readInt("DISPATCHER_POLL_TIMEOUT_MS", 1000));
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            dispatcher.close();
             executionGateway.close();
             try {
                 natsConnection.close();

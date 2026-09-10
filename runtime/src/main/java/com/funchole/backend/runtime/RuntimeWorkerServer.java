@@ -13,12 +13,11 @@ import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -26,11 +25,13 @@ import org.slf4j.LoggerFactory;
  * The Runtime Worker's IPC server. Listens on a Unix Domain Socket, accepts
  * persistent Dispatcher connections, decodes INVOKE messages, validates and
  * deduplicates them by {@code executionId}, responds ACCEPTED promptly, and
- * then emits a deterministic fake RESULT or ERROR.
+ * then executes the pinned artifact through a persistent {@link NodeExecutor}
+ * before writing the real RESULT or ERROR.
  *
- * This is not a Function execution engine: it only accepts ownership of an
- * execution attempt. It never queries the FuncHole database and never
- * consumes JetStream - the Dispatcher remains the sole global coordinator.
+ * This is not a generic Function execution engine: for this milestone it
+ * only supports {@code runtimeType=NODE} and {@code componentType=FUNCTION}.
+ * It never queries the FuncHole database and never consumes JetStream - the
+ * Dispatcher remains the sole global coordinator.
  *
  * Idempotency is in-memory and per-process only; a worker restart loses all
  * dedup state (documented limitation).
@@ -38,17 +39,17 @@ import org.slf4j.LoggerFactory;
 public final class RuntimeWorkerServer implements AutoCloseable {
 
     private static final Logger logger = LoggerFactory.getLogger(RuntimeWorkerServer.class);
+    private static final String SUPPORTED_COMPONENT_TYPE = "FUNCTION";
 
     private final ServerSocketChannel serverChannel;
     private final Path socketPath;
     private final String runtimeInstanceId;
     private final String runtimeType;
-    private final RuntimeTerminalMode terminalMode;
-    private final long fakeCompletionDelayMillis;
+    private final ArtifactResolver artifactResolver;
+    private final NodeExecutor nodeExecutor;
     private final RuntimeInvokeValidator validator;
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final Map<UUID, WorkerExecutionState> executionsByExecutionId = new ConcurrentHashMap<>();
-    private final ScheduledExecutorService completionExecutor;
     private volatile boolean running = true;
 
     private RuntimeWorkerServer(
@@ -56,21 +57,16 @@ public final class RuntimeWorkerServer implements AutoCloseable {
             Path socketPath,
             String runtimeInstanceId,
             String runtimeType,
-            RuntimeTerminalMode terminalMode,
-            long fakeCompletionDelayMillis
+            ArtifactResolver artifactResolver,
+            NodeExecutor nodeExecutor
     ) {
         this.serverChannel = serverChannel;
         this.socketPath = socketPath;
         this.runtimeInstanceId = runtimeInstanceId;
         this.runtimeType = runtimeType;
-        this.terminalMode = terminalMode;
-        this.fakeCompletionDelayMillis = fakeCompletionDelayMillis;
+        this.artifactResolver = artifactResolver;
+        this.nodeExecutor = nodeExecutor;
         this.validator = new RuntimeInvokeValidator(runtimeType);
-        this.completionExecutor = Executors.newSingleThreadScheduledExecutor(runnable -> {
-            Thread thread = new Thread(runnable, "runtime-worker-fake-completion-" + runtimeInstanceId);
-            thread.setDaemon(true);
-            return thread;
-        });
     }
 
     /**
@@ -78,28 +74,18 @@ public final class RuntimeWorkerServer implements AutoCloseable {
      * an unclean shutdown, but refuses to bind (and does not touch the file)
      * if another process is actually listening on it.
      */
-    public static RuntimeWorkerServer bind(Path socketPath, String runtimeInstanceId, String runtimeType) throws IOException {
-        return bind(socketPath, runtimeInstanceId, runtimeType, RuntimeTerminalMode.RESULT, 25);
-    }
-
     public static RuntimeWorkerServer bind(
             Path socketPath,
             String runtimeInstanceId,
             String runtimeType,
-            RuntimeTerminalMode terminalMode,
-            long fakeCompletionDelayMillis
+            ArtifactResolver artifactResolver,
+            NodeExecutor nodeExecutor
     ) throws IOException {
         prepareSocketPath(socketPath);
         ServerSocketChannel serverChannel = ServerSocketChannel.open(StandardProtocolFamily.UNIX);
         serverChannel.bind(UnixDomainSocketAddress.of(socketPath));
         return new RuntimeWorkerServer(
-                serverChannel,
-                socketPath,
-                runtimeInstanceId,
-                runtimeType,
-                terminalMode,
-                fakeCompletionDelayMillis
-        );
+                serverChannel, socketPath, runtimeInstanceId, runtimeType, artifactResolver, nodeExecutor);
     }
 
     /**
@@ -127,7 +113,6 @@ public final class RuntimeWorkerServer implements AutoCloseable {
     @Override
     public void close() {
         running = false;
-        completionExecutor.shutdownNow();
         try {
             serverChannel.close();
         } catch (IOException ignored) {
@@ -223,11 +208,10 @@ public final class RuntimeWorkerServer implements AutoCloseable {
         WorkerExecutionState state = firstAcceptance ? executionState : existing;
         if (firstAcceptance) {
             logger.info(
-                    "Runtime invocation accepted: executionId={}, invocationId={}, stepId={}, componentVersionId={}",
+                    "Artifact execution accepted: executionId={}, componentVersionId={}, runtimeType={}",
                     message.executionId(),
-                    message.payload().invocationId(),
-                    message.payload().stepId(),
-                    message.payload().componentVersionId()
+                    message.payload().componentVersionId(),
+                    message.payload().runtimeType()
             );
         } else {
             logger.debug("Duplicate INVOKE for already-accepted executionId={}", message.executionId());
@@ -235,29 +219,61 @@ public final class RuntimeWorkerServer implements AutoCloseable {
 
         writeJson(out, RuntimeAcceptedMessage.of(message.executionId()));
         if (firstAcceptance) {
-            scheduleFakeCompletion(state, out);
+            executeArtifact(state, out);
         } else if (state.terminalMessage() != null) {
             writeJson(out, state.terminalMessage());
         }
         return true;
     }
 
-    private void scheduleFakeCompletion(WorkerExecutionState state, OutputStream out) {
-        completionExecutor.schedule(
-                () -> completeFakeExecution(state, out),
-                fakeCompletionDelayMillis,
-                TimeUnit.MILLISECONDS
-        );
-    }
+    private void executeArtifact(WorkerExecutionState state, OutputStream out) {
+        RuntimeInvokeMessage message = state.message();
+        RuntimeInvokePayload payload = message.payload();
 
-    private void completeFakeExecution(WorkerExecutionState state, OutputStream out) {
-        RuntimeTerminalMessage terminalMessage = terminalMode == RuntimeTerminalMode.ERROR
-                ? RuntimeTerminalMessage.error(state.message().executionId())
-                : RuntimeTerminalMessage.result(state.message().executionId());
-        if (!state.complete(terminalMessage)) {
+        if (!SUPPORTED_COMPONENT_TYPE.equalsIgnoreCase(payload.componentType())) {
+            completeAndWrite(state, out, RuntimeTerminalMessage.error(
+                    message.executionId(),
+                    "UNSUPPORTED_COMPONENT_TYPE",
+                    "Runtime Worker only executes " + runtimeType.toUpperCase(Locale.ROOT) + " " + SUPPORTED_COMPONENT_TYPE
+                            + " components; got " + payload.componentType()
+            ));
             return;
         }
 
+        Optional<ArtifactReference> artifact = artifactResolver.resolve(payload.componentId(), payload.componentVersionId());
+        if (artifact.isEmpty()) {
+            completeAndWrite(state, out, RuntimeTerminalMessage.error(
+                    message.executionId(),
+                    "ARTIFACT_NOT_FOUND",
+                    "No artifact registered for componentVersionId=" + payload.componentVersionId()
+            ));
+            return;
+        }
+        logger.info(
+                "Artifact resolved: executionId={}, componentVersionId={}, artifactPath={}",
+                message.executionId(), payload.componentVersionId(), artifact.get().artifactPath()
+        );
+
+        NodeExecutionRequest nodeRequest = new NodeExecutionRequest(
+                message.executionId(),
+                payload.componentId(),
+                payload.componentVersionId(),
+                artifact.get().artifactPath(),
+                payload.input()
+        );
+
+        nodeExecutor.execute(nodeRequest).whenComplete((result, failure) -> {
+            RuntimeTerminalMessage terminalMessage = failure != null
+                    ? RuntimeTerminalMessage.error(message.executionId(), "NODE_EXECUTOR_UNAVAILABLE", failure.getMessage())
+                    : RuntimeTerminalMessage.from(result);
+            completeAndWrite(state, out, terminalMessage);
+        });
+    }
+
+    private void completeAndWrite(WorkerExecutionState state, OutputStream out, RuntimeTerminalMessage terminalMessage) {
+        if (!state.complete(terminalMessage)) {
+            return;
+        }
         try {
             writeJson(out, terminalMessage);
             logger.info(
