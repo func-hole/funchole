@@ -1,8 +1,11 @@
 package com.funchole.backend.runtime;
 
 import java.io.IOException;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -20,10 +23,17 @@ public final class FilesystemArtifactCache implements ArtifactCache {
 
     private final Path cacheRoot;
     private final String runtimeType;
+    private final Runnable beforePublish;
 
     public FilesystemArtifactCache(Path cacheRoot, String runtimeType) {
+        this(cacheRoot, runtimeType, () -> {
+        });
+    }
+
+    FilesystemArtifactCache(Path cacheRoot, String runtimeType, Runnable beforePublish) {
         this.cacheRoot = cacheRoot;
         this.runtimeType = runtimeType;
+        this.beforePublish = beforePublish;
     }
 
     @Override
@@ -45,14 +55,36 @@ public final class FilesystemArtifactCache implements ArtifactCache {
             return existing.get();
         }
         Path entryDirectory = cacheEntry(componentVersionId);
+        Path stagingDirectory = stagingEntry(componentVersionId);
         try {
-            Files.createDirectories(entryDirectory);
+            Files.createDirectories(cacheRoot);
+            deleteRecursively(stagingDirectory);
+            Files.createDirectories(stagingDirectory);
             try (var files = Files.walk(sourceArtifactDirectory)) {
-                files.filter(Files::isRegularFile).forEach(source -> copy(sourceArtifactDirectory, source, entryDirectory));
+                files.filter(Files::isRegularFile).forEach(source -> copy(sourceArtifactDirectory, source, stagingDirectory));
+            }
+            beforePublish.run();
+
+            Optional<ArtifactReference> raced = resolve(componentId, componentVersionId);
+            if (raced.isPresent()) {
+                deleteRecursively(stagingDirectory);
+                return raced.get();
+            }
+
+            try {
+                publish(stagingDirectory, entryDirectory);
+            } catch (FileAlreadyExistsException exception) {
+                Optional<ArtifactReference> racedAfterMove = resolve(componentId, componentVersionId);
+                if (racedAfterMove.isPresent()) {
+                    return racedAfterMove.get();
+                }
+                throw exception;
             }
         } catch (IOException exception) {
             throw new IllegalStateException(
                     "Failed to cache artifact for componentVersionId=" + componentVersionId, exception);
+        } finally {
+            deleteRecursively(stagingDirectory);
         }
         return resolve(componentId, componentVersionId).orElseThrow(() ->
                 new IllegalStateException("Cached artifact did not resolve for componentVersionId=" + componentVersionId));
@@ -77,7 +109,36 @@ public final class FilesystemArtifactCache implements ArtifactCache {
         }
     }
 
+    private void publish(Path stagingDirectory, Path entryDirectory) throws IOException {
+        try {
+            Files.move(stagingDirectory, entryDirectory, StandardCopyOption.ATOMIC_MOVE);
+        } catch (AtomicMoveNotSupportedException exception) {
+            throw new IllegalStateException("Atomic artifact cache publication is not supported by this filesystem", exception);
+        }
+    }
+
     private Path cacheEntry(UUID componentVersionId) {
         return cacheRoot.resolve(componentVersionId.toString());
+    }
+
+    private Path stagingEntry(UUID componentVersionId) {
+        return cacheRoot.resolve("." + componentVersionId + "." + UUID.randomUUID() + ".staging");
+    }
+
+    private void deleteRecursively(Path root) {
+        if (root == null || !Files.exists(root)) {
+            return;
+        }
+        try (var paths = Files.walk(root)) {
+            paths.sorted(java.util.Comparator.reverseOrder()).forEach(path -> {
+                try {
+                    Files.deleteIfExists(path);
+                } catch (IOException ignored) {
+                    // Staging cleanup is best-effort.
+                }
+            });
+        } catch (IOException ignored) {
+            // Staging cleanup is best-effort.
+        }
     }
 }

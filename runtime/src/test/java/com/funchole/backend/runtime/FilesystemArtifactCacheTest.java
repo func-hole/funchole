@@ -1,6 +1,7 @@
 package com.funchole.backend.runtime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -9,6 +10,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -126,6 +130,40 @@ class FilesystemArtifactCacheTest {
         assertTrue(Files.readString(entryDirectory.resolve("lib/common.mjs")).contains("'lib'"));
         assertTrue(Files.readString(entryDirectory.resolve("vendor/common.mjs")).contains("'vendor'"));
         assertTrue(Files.isRegularFile(reference.artifactPath()));
+    }
+
+    @Test
+    void cacheEntryIsNotObservableUntilAllNestedFilesAreMaterialized() throws Exception {
+        UUID componentId = UUID.randomUUID();
+        UUID componentVersionId = UUID.randomUUID();
+        Path source = writeNestedSourceArtifact(componentVersionId).getParent();
+        CountDownLatch beforePublish = new CountDownLatch(1);
+        CountDownLatch allowPublish = new CountDownLatch(1);
+        FilesystemArtifactCache cache = new FilesystemArtifactCache(cacheRoot, "NODE", () -> {
+            beforePublish.countDown();
+            try {
+                if (!allowPublish.await(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("Timed out waiting to publish artifact cache entry");
+                }
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("Interrupted while waiting to publish artifact cache entry", exception);
+            }
+        });
+
+        try (var executor = Executors.newSingleThreadExecutor()) {
+            var future = executor.submit(() -> cache.put(componentId, componentVersionId, source));
+
+            assertTrue(beforePublish.await(5, TimeUnit.SECONDS));
+            assertFalse(Files.exists(cacheRoot.resolve(componentVersionId.toString())));
+
+            allowPublish.countDown();
+            ArtifactReference reference = future.get(5, TimeUnit.SECONDS);
+            Path cacheEntry = cacheRoot.resolve(componentVersionId.toString());
+            assertEquals(cacheEntry.resolve("index.mjs").toAbsolutePath(), reference.artifactPath());
+            assertTrue(Files.isRegularFile(cacheEntry.resolve("lib/client.mjs")));
+            assertTrue(Files.isRegularFile(cacheEntry.resolve("config/settings.json")));
+        }
     }
 
     private Path writeNestedSourceArtifact(UUID componentVersionId) throws IOException {

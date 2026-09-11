@@ -5,6 +5,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 /**
  * Read-only S3-compatible artifact store. It never resolves "latest" and
@@ -17,6 +21,8 @@ public final class S3ArtifactStore implements ArtifactStore {
 
     private final ArtifactCache cache;
     private final S3ArtifactClient s3Client;
+    private final ConcurrentMap<UUID, CompletableFuture<Optional<ArtifactReference>>> inFlightResolutions =
+            new ConcurrentHashMap<>();
 
     public S3ArtifactStore(ArtifactCache cache, S3ArtifactStoreConfig config) {
         this(cache, AwsS3ArtifactClient.from(config));
@@ -29,11 +35,49 @@ public final class S3ArtifactStore implements ArtifactStore {
 
     @Override
     public Optional<ArtifactReference> resolve(UUID componentId, UUID componentVersionId) {
+        if (componentId == null || componentVersionId == null) {
+            return Optional.empty();
+        }
+
         Optional<ArtifactReference> hit = cache.resolve(componentId, componentVersionId);
         if (hit.isPresent()) {
             return hit;
         }
 
+        CompletableFuture<Optional<ArtifactReference>> resolver = new CompletableFuture<>();
+        CompletableFuture<Optional<ArtifactReference>> inFlight = inFlightResolutions.putIfAbsent(
+                componentVersionId, resolver);
+        if (inFlight != null) {
+            return await(inFlight);
+        }
+
+        try {
+            Optional<ArtifactReference> racedHit = cache.resolve(componentId, componentVersionId);
+            Optional<ArtifactReference> resolved = racedHit.isPresent()
+                    ? racedHit
+                    : resolveCold(componentId, componentVersionId);
+            resolver.complete(resolved);
+            return resolved;
+        } catch (RuntimeException exception) {
+            resolver.completeExceptionally(exception);
+            throw exception;
+        } finally {
+            inFlightResolutions.remove(componentVersionId, resolver);
+        }
+    }
+
+    private Optional<ArtifactReference> await(CompletableFuture<Optional<ArtifactReference>> inFlight) {
+        try {
+            return inFlight.join();
+        } catch (CompletionException exception) {
+            if (exception.getCause() instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            throw exception;
+        }
+    }
+
+    private Optional<ArtifactReference> resolveCold(UUID componentId, UUID componentVersionId) {
         Path workspace = createTempDirectory(componentVersionId);
         try {
             Path archive = workspace.resolve(ARTIFACT_FILE_NAME);

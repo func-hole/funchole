@@ -6,11 +6,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.zip.GZIPOutputStream;
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
@@ -97,6 +102,31 @@ class S3ArtifactStoreTest {
     }
 
     @Test
+    void concurrentMissingArtifactForSameVersionPerformsOneS3Download() throws Exception {
+        UUID componentId = UUID.randomUUID();
+        UUID componentVersionId = UUID.randomUUID();
+        RecordingS3ArtifactClient s3Client = new RecordingS3ArtifactClient();
+        s3Client.blockDownloads(1);
+        S3ArtifactStore store = new S3ArtifactStore(
+                new FilesystemArtifactCache(tempDir.resolve("cache"), "NODE"),
+                s3Client
+        );
+
+        try (var executor = Executors.newFixedThreadPool(2)) {
+            var first = executor.submit(() -> store.resolve(componentId, componentVersionId));
+            var second = executor.submit(() -> store.resolve(componentId, componentVersionId));
+
+            assertTrue(s3Client.awaitDownloadsStarted());
+            assertEquals(1, s3Client.downloadCount());
+            s3Client.releaseDownloads();
+
+            assertTrue(first.get(5, TimeUnit.SECONDS).isEmpty());
+            assertTrue(second.get(5, TimeUnit.SECONDS).isEmpty());
+            assertEquals(1, s3Client.downloadCount());
+        }
+    }
+
+    @Test
     void differentComponentVersionsRemainIsolated() throws Exception {
         UUID componentId = UUID.randomUUID();
         UUID versionA = UUID.randomUUID();
@@ -115,6 +145,69 @@ class S3ArtifactStoreTest {
         assertTrue(Files.readString(artifactA.artifactPath()).contains("'A'"));
         assertTrue(Files.readString(artifactB.artifactPath()).contains("'B'"));
         assertEquals(2, s3Client.downloadCount());
+    }
+
+    @Test
+    void concurrentColdResolveForSameVersionPerformsOneS3Download() throws Exception {
+        UUID componentId = UUID.randomUUID();
+        UUID componentVersionId = UUID.randomUUID();
+        Path archive = writeArchive(Map.of(
+                "index.mjs", "export async function handler() { return 'single-flight'; }",
+                "nested/value.mjs", "export const value = 'ready';"
+        ));
+        RecordingS3ArtifactClient s3Client = new RecordingS3ArtifactClient();
+        s3Client.put(S3ArtifactStore.objectKey(componentVersionId), archive);
+        s3Client.blockDownloads(1);
+        Path cacheRoot = tempDir.resolve("cache");
+        S3ArtifactStore store = new S3ArtifactStore(new FilesystemArtifactCache(cacheRoot, "NODE"), s3Client);
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+
+        try (var executor = Executors.newFixedThreadPool(2)) {
+            Callable<ArtifactReference> task = () -> {
+                ready.countDown();
+                assertTrue(start.await(5, TimeUnit.SECONDS));
+                return store.resolve(componentId, componentVersionId).orElseThrow();
+            };
+            var first = executor.submit(task);
+            var second = executor.submit(task);
+
+            assertTrue(ready.await(5, TimeUnit.SECONDS));
+            start.countDown();
+            assertTrue(s3Client.awaitDownloadsStarted());
+            assertEquals(1, s3Client.downloadCount());
+            s3Client.releaseDownloads();
+
+            ArtifactReference firstReference = first.get(5, TimeUnit.SECONDS);
+            ArtifactReference secondReference = second.get(5, TimeUnit.SECONDS);
+            assertEquals(firstReference.artifactPath(), secondReference.artifactPath());
+            assertTrue(Files.isRegularFile(cacheRoot.resolve(componentVersionId.toString()).resolve("nested/value.mjs")));
+            assertEquals(1, s3Client.downloadCount());
+        }
+    }
+
+    @Test
+    void differentComponentVersionsCanResolveIndependently() throws Exception {
+        UUID componentId = UUID.randomUUID();
+        UUID versionA = UUID.randomUUID();
+        UUID versionB = UUID.randomUUID();
+        RecordingS3ArtifactClient s3Client = new RecordingS3ArtifactClient();
+        s3Client.put(S3ArtifactStore.objectKey(versionA), writeArchive(Map.of("index.mjs", "export async function handler() { return 'A'; }")));
+        s3Client.put(S3ArtifactStore.objectKey(versionB), writeArchive(Map.of("index.mjs", "export async function handler() { return 'B'; }")));
+        s3Client.blockDownloads(2);
+        S3ArtifactStore store = new S3ArtifactStore(new FilesystemArtifactCache(tempDir.resolve("cache"), "NODE"), s3Client);
+
+        try (var executor = Executors.newFixedThreadPool(2)) {
+            var first = executor.submit(() -> store.resolve(componentId, versionA).orElseThrow());
+            var second = executor.submit(() -> store.resolve(componentId, versionB).orElseThrow());
+
+            assertTrue(s3Client.awaitDownloadsStarted());
+            assertEquals(2, s3Client.downloadCount());
+            s3Client.releaseDownloads();
+
+            assertTrue(first.get(5, TimeUnit.SECONDS).artifactPath().toString().contains(versionA.toString()));
+            assertTrue(second.get(5, TimeUnit.SECONDS).artifactPath().toString().contains(versionB.toString()));
+        }
     }
 
     private Path writeArtifactDirectory(UUID componentVersionId, String source) throws IOException {
@@ -146,18 +239,38 @@ class S3ArtifactStoreTest {
     }
 
     private static final class RecordingS3ArtifactClient implements S3ArtifactClient {
-        private final Map<String, Path> objectsByKey = new HashMap<>();
+        private final Map<String, Path> objectsByKey = new ConcurrentHashMap<>();
         private final AtomicInteger downloadCount = new AtomicInteger();
-        private String lastKey;
+        private final AtomicReference<String> lastKey = new AtomicReference<>();
+        private CountDownLatch downloadsStarted;
+        private CountDownLatch releaseDownloads;
 
         private void put(String key, Path source) {
             objectsByKey.put(key, source);
         }
 
+        private void blockDownloads(int expectedDownloadCount) {
+            downloadsStarted = new CountDownLatch(expectedDownloadCount);
+            releaseDownloads = new CountDownLatch(1);
+        }
+
         @Override
         public boolean download(String key, Path destination) {
             downloadCount.incrementAndGet();
-            lastKey = key;
+            lastKey.set(key);
+            if (downloadsStarted != null) {
+                downloadsStarted.countDown();
+            }
+            if (releaseDownloads != null) {
+                try {
+                    if (!releaseDownloads.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("Timed out waiting to release fake S3 download");
+                    }
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("Interrupted while waiting to release fake S3 download", exception);
+                }
+            }
             Path source = objectsByKey.get(key);
             if (source == null) {
                 return false;
@@ -175,7 +288,17 @@ class S3ArtifactStoreTest {
         }
 
         private String lastKey() {
-            return lastKey;
+            return lastKey.get();
+        }
+
+        private boolean awaitDownloadsStarted() throws InterruptedException {
+            return downloadsStarted == null || downloadsStarted.await(5, TimeUnit.SECONDS);
+        }
+
+        private void releaseDownloads() {
+            if (releaseDownloads != null) {
+                releaseDownloads.countDown();
+            }
         }
     }
 }
