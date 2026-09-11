@@ -3,7 +3,6 @@ package com.funchole.backend.runtime;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Comparator;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -49,7 +48,7 @@ public final class FilesystemArtifactCache implements ArtifactCache {
         try {
             Files.createDirectories(entryDirectory);
             try (var files = Files.walk(sourceArtifactDirectory)) {
-                files.filter(Files::isRegularFile).forEach(source -> copy(source, entryDirectory));
+                files.filter(Files::isRegularFile).forEach(source -> copy(sourceArtifactDirectory, source, entryDirectory));
             }
         } catch (IOException exception) {
             throw new IllegalStateException(
@@ -59,11 +58,20 @@ public final class FilesystemArtifactCache implements ArtifactCache {
                 new IllegalStateException("Cached artifact did not resolve for componentVersionId=" + componentVersionId));
     }
 
-    private void copy(Path source, Path entryDirectory) {
+    /**
+     * Copies {@code source} into the cache entry preserving its path relative
+     * to {@code sourceArtifactDirectory}, creating parent directories as
+     * needed - nested artifact structures keep their shape and same-named
+     * files in different directories never collide.
+     */
+    private void copy(Path sourceArtifactDirectory, Path source, Path entryDirectory) {
+        Path relative = sourceArtifactDirectory.relativize(source);
+        Path target = entryDirectory.resolve(relative);
         try {
-            String fileName = source.getFileName().toString();
-            Files.copy(source, entryDirectory.resolve(fileName),
-                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            if (target.getParent() != null) {
+                Files.createDirectories(target.getParent());
+            }
+            Files.copy(source, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
         } catch (IOException exception) {
             throw new IllegalStateException("Failed to copy artifact source into cache: " + source, exception);
         }
