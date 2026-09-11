@@ -1,10 +1,12 @@
 package com.funchole.backend.runtime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.funchole.backend.artifact.ArtifactReference;
-import com.funchole.backend.artifact.ArtifactStore;
+import com.funchole.backend.artifact.RemoteArtifact;
+import com.funchole.backend.artifact.RemoteArtifactStore;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -21,8 +23,8 @@ import org.junit.jupiter.api.io.TempDir;
 /**
  * Cache hit/miss orchestration and same-process single-flight for cold
  * resolves - moved here from the old cache-aware S3ArtifactStore, now
- * exercised against a real FilesystemArtifactCache and a fake remote
- * ArtifactStore so it has no dependency on real S3.
+ * exercised against a real FilesystemArtifactCache and a fake
+ * RemoteArtifactStore so it has no dependency on real S3.
  */
 class CachedArtifactStoreTest {
 
@@ -36,13 +38,14 @@ class CachedArtifactStoreTest {
         FilesystemArtifactCache cache = new FilesystemArtifactCache(tempDir.resolve("cache"), "NODE");
         Path source = writeArtifactDirectory("export async function handler() { return 'hit'; }");
         cache.put(componentId, componentVersionId, source);
-        RecordingArtifactStore remoteStore = new RecordingArtifactStore();
+        RecordingRemoteArtifactStore remoteStore = new RecordingRemoteArtifactStore();
         CachedArtifactStore store = new CachedArtifactStore(cache, remoteStore);
 
         Optional<ArtifactReference> resolved = store.resolve(componentId, componentVersionId);
 
         assertTrue(resolved.isPresent());
         assertEquals(0, remoteStore.resolveCount());
+        assertEquals(0, remoteStore.materializedCount());
         assertEquals(cache.resolve(componentId, componentVersionId).orElseThrow().artifactPath(), resolved.get().artifactPath());
     }
 
@@ -50,7 +53,7 @@ class CachedArtifactStoreTest {
     void cacheMissRetrievesExactRemoteArtifactAndCachesIt() throws Exception {
         UUID componentId = UUID.randomUUID();
         UUID componentVersionId = UUID.randomUUID();
-        RecordingArtifactStore remoteStore = new RecordingArtifactStore();
+        RecordingRemoteArtifactStore remoteStore = new RecordingRemoteArtifactStore();
         remoteStore.put(componentVersionId, "export async function handler() { return 'remote'; }");
         Path cacheRoot = tempDir.resolve("cache");
         CachedArtifactStore store = new CachedArtifactStore(new FilesystemArtifactCache(cacheRoot, "NODE"), remoteStore);
@@ -58,17 +61,32 @@ class CachedArtifactStoreTest {
         ArtifactReference resolved = store.resolve(componentId, componentVersionId).orElseThrow();
 
         assertEquals(1, remoteStore.resolveCount());
+        // The runtime ArtifactReference points into the cache, not the temporary remote directory.
         assertEquals(cacheRoot.resolve(componentVersionId.toString()).resolve("index.mjs"), resolved.artifactPath());
         assertTrue(Files.isRegularFile(resolved.artifactPath()));
-        // The remote store's temporary directory must be cleaned up once materialized into the cache.
-        assertTrue(remoteStore.lastReturnedDirectoryWasDeleted());
+        assertTrue(remoteStore.lastMaterializedDirectoryWasRemoved());
+    }
+
+    @Test
+    void cacheMaterializationFailureStillRemovesTheTemporaryDirectory() throws Exception {
+        UUID componentId = UUID.randomUUID();
+        UUID componentVersionId = UUID.randomUUID();
+        RecordingRemoteArtifactStore remoteStore = new RecordingRemoteArtifactStore();
+        remoteStore.put(componentVersionId, "export async function handler() { return 'remote'; }");
+        ThrowingArtifactCache cache = new ThrowingArtifactCache();
+        CachedArtifactStore store = new CachedArtifactStore(cache, remoteStore);
+
+        assertThrows(IllegalStateException.class, () -> store.resolve(componentId, componentVersionId));
+
+        assertEquals(1, remoteStore.resolveCount());
+        assertTrue(remoteStore.lastMaterializedDirectoryWasRemoved());
     }
 
     @Test
     void missingRemoteArtifactKeepsArtifactNotFoundBehavior() {
         UUID componentId = UUID.randomUUID();
         UUID componentVersionId = UUID.randomUUID();
-        RecordingArtifactStore remoteStore = new RecordingArtifactStore();
+        RecordingRemoteArtifactStore remoteStore = new RecordingRemoteArtifactStore();
         CachedArtifactStore store = new CachedArtifactStore(
                 new FilesystemArtifactCache(tempDir.resolve("cache"), "NODE"), remoteStore);
 
@@ -82,7 +100,7 @@ class CachedArtifactStoreTest {
     void concurrentMissesForSameVersionPerformOneRemoteFetch() throws Exception {
         UUID componentId = UUID.randomUUID();
         UUID componentVersionId = UUID.randomUUID();
-        RecordingArtifactStore remoteStore = new RecordingArtifactStore();
+        RecordingRemoteArtifactStore remoteStore = new RecordingRemoteArtifactStore();
         remoteStore.put(componentVersionId, "export async function handler() { return 'single-flight'; }");
         remoteStore.blockResolutions(1);
         Path cacheRoot = tempDir.resolve("cache");
@@ -117,7 +135,7 @@ class CachedArtifactStoreTest {
         UUID componentId = UUID.randomUUID();
         UUID versionA = UUID.randomUUID();
         UUID versionB = UUID.randomUUID();
-        RecordingArtifactStore remoteStore = new RecordingArtifactStore();
+        RecordingRemoteArtifactStore remoteStore = new RecordingRemoteArtifactStore();
         remoteStore.put(versionA, "export async function handler() { return 'A'; }");
         remoteStore.put(versionB, "export async function handler() { return 'B'; }");
         CachedArtifactStore store = new CachedArtifactStore(
@@ -139,16 +157,30 @@ class CachedArtifactStoreTest {
         return directory;
     }
 
+    /** Always fails materialization, to exercise CachedArtifactStore's cleanup-on-failure path. */
+    private static final class ThrowingArtifactCache implements ArtifactCache {
+        @Override
+        public Optional<ArtifactReference> resolve(UUID componentId, UUID componentVersionId) {
+            return Optional.empty();
+        }
+
+        @Override
+        public ArtifactReference put(UUID componentId, UUID componentVersionId, Path sourceArtifactDirectory) {
+            throw new IllegalStateException("simulated cache materialization failure");
+        }
+    }
+
     /**
-     * Fake remote {@link ArtifactStore}: mirrors the real contract that
+     * Fake {@link RemoteArtifactStore}: mirrors the real contract that
      * {@code S3ArtifactStore} now provides - each resolve materializes a
-     * fresh temporary directory that the caller (CachedArtifactStore) is
-     * expected to delete after consuming it.
+     * fresh temporary directory wrapped in a closeable RemoteArtifact that
+     * the caller (CachedArtifactStore) is expected to close after consuming it.
      */
-    private final class RecordingArtifactStore implements ArtifactStore {
+    private final class RecordingRemoteArtifactStore implements RemoteArtifactStore {
         private final java.util.Map<UUID, String> sourcesByVersion = new java.util.concurrent.ConcurrentHashMap<>();
         private final AtomicInteger resolveCount = new AtomicInteger();
-        private volatile Path lastReturnedDirectory;
+        private final AtomicInteger materializedCount = new AtomicInteger();
+        private volatile Path lastMaterializedDirectory;
         private CountDownLatch resolutionsStarted;
         private CountDownLatch releaseResolutions;
 
@@ -162,7 +194,7 @@ class CachedArtifactStoreTest {
         }
 
         @Override
-        public Optional<ArtifactReference> resolve(UUID componentId, UUID componentVersionId) {
+        public Optional<RemoteArtifact> resolve(UUID componentId, UUID componentVersionId) {
             resolveCount.incrementAndGet();
             if (resolutionsStarted != null) {
                 resolutionsStarted.countDown();
@@ -184,8 +216,10 @@ class CachedArtifactStoreTest {
             try {
                 Path directory = Files.createTempDirectory("fake-remote-" + componentVersionId + "-");
                 Files.writeString(directory.resolve("index.mjs"), source);
-                lastReturnedDirectory = directory;
-                return Optional.of(new ArtifactReference(componentId, componentVersionId, "NODE", directory.resolve("index.mjs")));
+                materializedCount.incrementAndGet();
+                lastMaterializedDirectory = directory;
+                ArtifactReference reference = new ArtifactReference(componentId, componentVersionId, "NODE", directory.resolve("index.mjs"));
+                return Optional.of(new RemoteArtifact(reference, directory));
             } catch (IOException exception) {
                 throw new IllegalStateException("Failed to write fake remote artifact", exception);
             }
@@ -195,8 +229,12 @@ class CachedArtifactStoreTest {
             return resolveCount.get();
         }
 
-        private boolean lastReturnedDirectoryWasDeleted() {
-            return lastReturnedDirectory != null && !Files.exists(lastReturnedDirectory);
+        private int materializedCount() {
+            return materializedCount.get();
+        }
+
+        private boolean lastMaterializedDirectoryWasRemoved() {
+            return lastMaterializedDirectory != null && Files.notExists(lastMaterializedDirectory);
         }
 
         private boolean awaitResolutionsStarted() throws InterruptedException {

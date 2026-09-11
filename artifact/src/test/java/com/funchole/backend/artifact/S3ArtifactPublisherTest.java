@@ -76,10 +76,11 @@ class S3ArtifactPublisherTest {
         publisher.publish(componentVersionId, writePreparedArtifact(componentVersionId));
         S3ArtifactStore store = new S3ArtifactStore("NODE", s3Client);
 
-        ArtifactReference reference = store.resolve(componentId, componentVersionId).orElseThrow();
-
-        assertTrue(Files.isRegularFile(reference.artifactPath()));
-        assertTrue(Files.isRegularFile(reference.artifactPath().getParent().resolve("lib/client.mjs")));
+        try (RemoteArtifact remote = store.resolve(componentId, componentVersionId).orElseThrow()) {
+            ArtifactReference reference = remote.reference();
+            assertTrue(Files.isRegularFile(reference.artifactPath()));
+            assertTrue(Files.isRegularFile(reference.artifactPath().getParent().resolve("lib/client.mjs")));
+        }
     }
 
     @Test

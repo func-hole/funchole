@@ -1,6 +1,7 @@
 package com.funchole.backend.artifact;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -20,9 +21,9 @@ import org.junit.jupiter.api.io.TempDir;
 
 /**
  * S3ArtifactStore is exact-remote-retrieval only now - no cache, no
- * single-flight de-duplication. Those behaviors are covered by
- * CachedArtifactStoreTest in the runtime module, against a real
- * FilesystemArtifactCache and a fake remote ArtifactStore.
+ * single-flight de-duplication. Cache orchestration and cleanup-on-materialization-failure
+ * are covered by CachedArtifactStoreTest in the runtime module, against a
+ * real FilesystemArtifactCache and a fake RemoteArtifactStore.
  */
 class S3ArtifactStoreTest {
 
@@ -38,15 +39,16 @@ class S3ArtifactStoreTest {
         s3Client.put(S3ArtifactStore.objectKey(componentVersionId), archive);
         S3ArtifactStore store = new S3ArtifactStore("NODE", s3Client);
 
-        ArtifactReference resolved = store.resolve(componentId, componentVersionId).orElseThrow();
-
-        assertEquals(componentId, resolved.componentId());
-        assertEquals(componentVersionId, resolved.componentVersionId());
-        assertEquals("NODE", resolved.runtimeType());
-        assertEquals(1, s3Client.downloadCount());
-        assertEquals(S3ArtifactStore.objectKey(componentVersionId), s3Client.lastKey());
-        assertTrue(Files.isRegularFile(resolved.artifactPath()));
-        assertTrue(resolved.artifactPath().toString().endsWith("index.mjs"));
+        try (RemoteArtifact remote = store.resolve(componentId, componentVersionId).orElseThrow()) {
+            ArtifactReference resolved = remote.reference();
+            assertEquals(componentId, resolved.componentId());
+            assertEquals(componentVersionId, resolved.componentVersionId());
+            assertEquals("NODE", resolved.runtimeType());
+            assertEquals(1, s3Client.downloadCount());
+            assertEquals(S3ArtifactStore.objectKey(componentVersionId), s3Client.lastKey());
+            assertTrue(Files.isRegularFile(resolved.artifactPath()));
+            assertTrue(resolved.artifactPath().toString().endsWith("index.mjs"));
+        }
     }
 
     @Test
@@ -62,11 +64,11 @@ class S3ArtifactStoreTest {
         s3Client.put(S3ArtifactStore.objectKey(componentVersionId), archive);
         S3ArtifactStore store = new S3ArtifactStore("NODE", s3Client);
 
-        ArtifactReference resolved = store.resolve(componentId, componentVersionId).orElseThrow();
-
-        Path extractedDirectory = resolved.artifactPath().getParent();
-        assertTrue(Files.isRegularFile(extractedDirectory.resolve("lib/value.mjs")));
-        assertTrue(Files.isRegularFile(extractedDirectory.resolve("config/settings.json")));
+        try (RemoteArtifact remote = store.resolve(componentId, componentVersionId).orElseThrow()) {
+            Path extractedDirectory = remote.reference().artifactPath().getParent();
+            assertTrue(Files.isRegularFile(extractedDirectory.resolve("lib/value.mjs")));
+            assertTrue(Files.isRegularFile(extractedDirectory.resolve("config/settings.json")));
+        }
     }
 
     @Test
@@ -76,7 +78,7 @@ class S3ArtifactStoreTest {
         RecordingS3ArtifactClient s3Client = new RecordingS3ArtifactClient();
         S3ArtifactStore store = new S3ArtifactStore("NODE", s3Client);
 
-        Optional<ArtifactReference> resolved = store.resolve(componentId, componentVersionId);
+        Optional<RemoteArtifact> resolved = store.resolve(componentId, componentVersionId);
 
         assertTrue(resolved.isEmpty());
         assertEquals(1, s3Client.downloadCount());
@@ -93,12 +95,14 @@ class S3ArtifactStoreTest {
         s3Client.put(S3ArtifactStore.objectKey(versionB), writeArchive(Map.of("index.mjs", "export async function handler() { return 'B'; }")));
         S3ArtifactStore store = new S3ArtifactStore("NODE", s3Client);
 
-        ArtifactReference artifactA = store.resolve(componentId, versionA).orElseThrow();
-        ArtifactReference artifactB = store.resolve(componentId, versionB).orElseThrow();
-
-        assertTrue(Files.readString(artifactA.artifactPath()).contains("'A'"));
-        assertTrue(Files.readString(artifactB.artifactPath()).contains("'B'"));
-        assertEquals(2, s3Client.downloadCount());
+        try (
+                RemoteArtifact remoteA = store.resolve(componentId, versionA).orElseThrow();
+                RemoteArtifact remoteB = store.resolve(componentId, versionB).orElseThrow()
+        ) {
+            assertTrue(Files.readString(remoteA.reference().artifactPath()).contains("'A'"));
+            assertTrue(Files.readString(remoteB.reference().artifactPath()).contains("'B'"));
+            assertEquals(2, s3Client.downloadCount());
+        }
     }
 
     @Test
@@ -109,12 +113,49 @@ class S3ArtifactStoreTest {
         s3Client.put(S3ArtifactStore.objectKey(componentVersionId), writeArchive(Map.of("index.mjs", "export async function handler() { return 'x'; }")));
         S3ArtifactStore store = new S3ArtifactStore("NODE", s3Client);
 
-        store.resolve(componentId, componentVersionId);
-        store.resolve(componentId, componentVersionId);
+        try (
+                RemoteArtifact first = store.resolve(componentId, componentVersionId).orElseThrow();
+                RemoteArtifact second = store.resolve(componentId, componentVersionId).orElseThrow()
+        ) {
+            // No caching or single-flight de-duplication belongs to this store;
+            // two calls mean two independent downloads.
+            assertEquals(2, s3Client.downloadCount());
+        }
+    }
 
-        // No caching or single-flight de-duplication belongs to this store;
-        // two calls mean two independent downloads.
-        assertEquals(2, s3Client.downloadCount());
+    @Test
+    void resolvedArtifactCanBeClosedToRemoveItsTemporaryDirectory() throws Exception {
+        UUID componentId = UUID.randomUUID();
+        UUID componentVersionId = UUID.randomUUID();
+        RecordingS3ArtifactClient s3Client = new RecordingS3ArtifactClient();
+        s3Client.put(S3ArtifactStore.objectKey(componentVersionId), writeArchive(Map.of("index.mjs", "export async function handler() { return 'x'; }")));
+        S3ArtifactStore store = new S3ArtifactStore("NODE", s3Client);
+        RemoteArtifact remote = store.resolve(componentId, componentVersionId).orElseThrow();
+        Path extractedDirectory = remote.reference().artifactPath().getParent();
+        assertTrue(Files.exists(extractedDirectory));
+
+        remote.close();
+
+        assertTrue(Files.notExists(extractedDirectory));
+    }
+
+    @Test
+    void corruptArchiveDoesNotLeakTheExtractionDirectory() throws Exception {
+        UUID componentId = UUID.randomUUID();
+        UUID componentVersionId = UUID.randomUUID();
+        Path corruptArchive = Files.createTempFile(tempDir, "corrupt-", ".tar.gz");
+        Files.writeString(corruptArchive, "not a real tar.gz archive");
+        RecordingS3ArtifactClient s3Client = new RecordingS3ArtifactClient();
+        s3Client.put(S3ArtifactStore.objectKey(componentVersionId), corruptArchive);
+        S3ArtifactStore store = new S3ArtifactStore("NODE", s3Client);
+
+        assertThrows(IllegalStateException.class, () -> store.resolve(componentId, componentVersionId));
+
+        // No leaked funchole-artifact-*-extracted-* temp directories.
+        try (var siblings = Files.list(corruptArchive.getFileSystem().getPath(System.getProperty("java.io.tmpdir")))) {
+            assertTrue(siblings.noneMatch(path ->
+                    path.getFileName().toString().contains(componentVersionId.toString()) && path.getFileName().toString().contains("extracted")));
+        }
     }
 
     private Path writeArchive(Map<String, String> entries) throws IOException {

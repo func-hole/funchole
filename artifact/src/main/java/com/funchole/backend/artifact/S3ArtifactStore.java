@@ -14,18 +14,18 @@ import java.util.UUID;
  * This store handles exact remote retrieval only - no caching, no
  * deduplication of concurrent resolves for the same version. Callers that
  * need either of those (e.g. the runtime execution module's local artifact
- * cache) compose on top of this store via the {@link ArtifactStore}
+ * cache) compose on top of this store via the {@link RemoteArtifactStore}
  * contract; this class does not know they exist.
  *
- * Ownership note: each successful {@link #resolve} downloads and extracts
- * into a fresh temporary directory that this store does <em>not</em> delete
- * - the caller receives it via the returned {@link ArtifactReference} and
- * owns its lifecycle (read it, copy out of it, then remove it). A store used
- * directly with no caller-side cleanup will accumulate temporary
- * directories; the intended usage is behind a layer that materializes the
- * result somewhere stable and then removes this temporary copy.
+ * Ownership is explicit: each successful {@link #resolve} downloads and
+ * extracts into a fresh temporary directory, handed back wrapped in a
+ * {@link RemoteArtifact} that the caller must close once done with it. This
+ * store cleans up after itself on any internal failure (a bad download or a
+ * bad archive never leaks its extraction directory) but cannot know when the
+ * caller is finished with a successfully returned result - that ownership
+ * transfers at the point {@code resolve} returns.
  */
-public final class S3ArtifactStore implements ArtifactStore {
+public final class S3ArtifactStore implements RemoteArtifactStore {
 
     private static final String ARTIFACT_FILE_NAME = "artifact.tar.gz";
     private static final String ENTRY_POINT_FILE_NAME = "index.mjs";
@@ -43,7 +43,7 @@ public final class S3ArtifactStore implements ArtifactStore {
     }
 
     @Override
-    public Optional<ArtifactReference> resolve(UUID componentId, UUID componentVersionId) {
+    public Optional<RemoteArtifact> resolve(UUID componentId, UUID componentVersionId) {
         if (componentId == null || componentVersionId == null) {
             return Optional.empty();
         }
@@ -55,15 +55,27 @@ public final class S3ArtifactStore implements ArtifactStore {
                 return Optional.empty();
             }
 
-            Path extracted = createTempDirectory(componentVersionId, "extracted");
-            ArtifactArchiveExtractor.extractTarGz(archive, extracted);
-            return Optional.of(new ArtifactReference(
-                    componentId, componentVersionId, runtimeType, extracted.resolve(ENTRY_POINT_FILE_NAME)));
+            return Optional.of(extract(componentId, componentVersionId, archive));
         } finally {
             // Only the raw downloaded archive is this store's own concern to
-            // clean up; the extracted directory above is handed to the
-            // caller and deliberately left alone.
+            // clean up; the extracted directory (if any) transfers ownership
+            // to the caller via the returned RemoteArtifact.
             deleteRecursively(downloadWorkspace);
+        }
+    }
+
+    private RemoteArtifact extract(UUID componentId, UUID componentVersionId, Path archive) {
+        Path extracted = createTempDirectory(componentVersionId, "extracted");
+        try {
+            ArtifactArchiveExtractor.extractTarGz(archive, extracted);
+            ArtifactReference reference = new ArtifactReference(
+                    componentId, componentVersionId, runtimeType, extracted.resolve(ENTRY_POINT_FILE_NAME));
+            return new RemoteArtifact(reference, extracted);
+        } catch (RuntimeException exception) {
+            // Extraction never successfully handed off - this store still
+            // owns the directory, so it must clean it up before propagating.
+            deleteRecursively(extracted);
+            throw exception;
         }
     }
 
