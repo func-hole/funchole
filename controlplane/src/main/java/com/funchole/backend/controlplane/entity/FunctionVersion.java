@@ -36,6 +36,12 @@ public class FunctionVersion {
     @Column(name = "artifact_format", length = 100)
     private String artifactFormat;
 
+    @Column(name = "artifact_sha256", length = 64)
+    private String artifactSha256;
+
+    @Column(name = "artifact_size_bytes")
+    private Long artifactSizeBytes;
+
     @Column(name = "artifact_published_at")
     private OffsetDateTime artifactPublishedAt;
 
@@ -66,10 +72,10 @@ public class FunctionVersion {
     }
 
     public Optional<ArtifactMetadata> getArtifactMetadata() {
-        if (artifactObjectKey == null || artifactFormat == null) {
+        if (artifactObjectKey == null || artifactFormat == null || artifactSha256 == null || artifactSizeBytes == null) {
             return Optional.empty();
         }
-        return Optional.of(new ArtifactMetadata(artifactObjectKey, artifactFormat, artifactPublishedAt));
+        return Optional.of(new ArtifactMetadata(artifactObjectKey, artifactFormat, artifactSha256, artifactSizeBytes, artifactPublishedAt));
     }
 
     public String getArtifactObjectKey() {
@@ -78,6 +84,14 @@ public class FunctionVersion {
 
     public String getArtifactFormat() {
         return artifactFormat;
+    }
+
+    public String getArtifactSha256() {
+        return artifactSha256;
+    }
+
+    public Long getArtifactSizeBytes() {
+        return artifactSizeBytes;
     }
 
     public OffsetDateTime getArtifactPublishedAt() {
@@ -96,9 +110,11 @@ public class FunctionVersion {
         return updatedAt;
     }
 
-    public void attachArtifact(String artifactObjectKey, String artifactFormat) {
+    public void attachArtifact(String artifactObjectKey, String artifactFormat, String artifactSha256, long artifactSizeBytes) {
         this.artifactObjectKey = artifactObjectKey;
         this.artifactFormat = artifactFormat;
+        this.artifactSha256 = artifactSha256;
+        this.artifactSizeBytes = artifactSizeBytes;
         this.artifactPublishedAt = OffsetDateTime.now();
         this.updatedAt = this.artifactPublishedAt;
     }

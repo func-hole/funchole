@@ -7,6 +7,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -36,6 +38,21 @@ class S3ArtifactPublisherTest {
         assertTrue(Files.isRegularFile(extracted.resolve("lib/client.mjs")));
         assertTrue(Files.isRegularFile(extracted.resolve("config/settings.json")));
         assertEquals("export const client = 'client';", Files.readString(extracted.resolve("lib/client.mjs")));
+    }
+
+    @Test
+    void checksumAndSizeReflectExactUploadedArchiveBytes() throws Exception {
+        UUID componentVersionId = UUID.randomUUID();
+        Path preparedArtifact = writePreparedArtifact(componentVersionId);
+        RecordingUploadS3ArtifactClient s3Client = new RecordingUploadS3ArtifactClient(tempDir.resolve("remote"));
+        S3ArtifactPublisher publisher = new S3ArtifactPublisher(s3Client);
+
+        PublishedArtifact published = publisher.publish(componentVersionId, preparedArtifact);
+
+        Path uploadedArchive = s3Client.uploadedArchive(published.objectKey());
+        assertEquals(Files.size(uploadedArchive), published.sizeBytes());
+        assertEquals(sha256Hex(uploadedArchive), published.sha256());
+        assertEquals(64, published.sha256().length());
     }
 
     @Test
@@ -98,6 +115,12 @@ class S3ArtifactPublisherTest {
         );
 
         assertTrue(exception.getMessage().contains(S3ArtifactStore.objectKey(componentVersionId)));
+    }
+
+    private static String sha256Hex(Path file) throws Exception {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        digest.update(Files.readAllBytes(file));
+        return HexFormat.of().formatHex(digest.digest());
     }
 
     private Path writePreparedArtifact(UUID componentVersionId) throws IOException {

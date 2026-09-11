@@ -6,6 +6,7 @@ import com.funchole.backend.controlplane.repository.FunctionVersionRepository;
 import com.funchole.backend.core.base.exception.ResourceNotFoundException;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.regex.Pattern;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -15,6 +16,7 @@ public class FunctionVersionArtifactRegistry {
     public static final String ARTIFACT_FORMAT_TAR_GZ = "TAR_GZ";
 
     private static final String ARTIFACT_FILE_NAME = "artifact.tar.gz";
+    private static final Pattern SHA256_HEX_PATTERN = Pattern.compile("^[0-9a-f]{64}$");
 
     private final FunctionVersionRepository functionVersionRepository;
 
@@ -23,11 +25,21 @@ public class FunctionVersionArtifactRegistry {
     }
 
     @Transactional
-    public FunctionVersion attachPublishedArtifact(UUID functionVersionId, String artifactObjectKey, String artifactFormat) {
+    public FunctionVersion attachPublishedArtifact(
+            UUID functionVersionId,
+            String artifactObjectKey,
+            String artifactFormat,
+            String artifactSha256,
+            long artifactSizeBytes
+    ) {
         FunctionVersion functionVersion = functionVersionRepository.findById(functionVersionId)
                 .orElseThrow(() -> new ResourceNotFoundException("Function version not found: " + functionVersionId));
-        validateArtifactReference(functionVersionId, artifactObjectKey, artifactFormat);
-        functionVersion.attachArtifact(artifactObjectKey, artifactFormat);
+        if (functionVersion.getArtifactMetadata().isPresent()) {
+            throw new IllegalStateException(
+                    "Function version already has a published artifact and cannot be republished: " + functionVersionId);
+        }
+        validateArtifactReference(functionVersionId, artifactObjectKey, artifactFormat, artifactSha256, artifactSizeBytes);
+        functionVersion.attachArtifact(artifactObjectKey, artifactFormat, artifactSha256, artifactSizeBytes);
         return functionVersionRepository.save(functionVersion);
     }
 
@@ -44,7 +56,13 @@ public class FunctionVersionArtifactRegistry {
         return "artifacts/" + functionVersionId + "/" + ARTIFACT_FILE_NAME;
     }
 
-    private void validateArtifactReference(UUID functionVersionId, String artifactObjectKey, String artifactFormat) {
+    private void validateArtifactReference(
+            UUID functionVersionId,
+            String artifactObjectKey,
+            String artifactFormat,
+            String artifactSha256,
+            long artifactSizeBytes
+    ) {
         if (artifactObjectKey == null || artifactObjectKey.isBlank()) {
             throw new IllegalArgumentException("artifactObjectKey is required");
         }
@@ -54,6 +72,12 @@ public class FunctionVersionArtifactRegistry {
         }
         if (artifactFormat == null || artifactFormat.isBlank()) {
             throw new IllegalArgumentException("artifactFormat is required");
+        }
+        if (artifactSha256 == null || !SHA256_HEX_PATTERN.matcher(artifactSha256).matches()) {
+            throw new IllegalArgumentException("artifactSha256 must be a 64-character hex-encoded SHA-256 digest");
+        }
+        if (artifactSizeBytes <= 0) {
+            throw new IllegalArgumentException("artifactSizeBytes must be greater than zero");
         }
     }
 }

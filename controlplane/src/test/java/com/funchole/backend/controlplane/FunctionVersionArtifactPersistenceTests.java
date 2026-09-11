@@ -1,6 +1,7 @@
 package com.funchole.backend.controlplane;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.funchole.backend.controlplane.entity.AppUser;
 import com.funchole.backend.controlplane.entity.ArtifactMetadata;
@@ -26,6 +27,11 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 @Testcontainers
 @Transactional
 class FunctionVersionArtifactPersistenceTests {
+
+    private static final String SHA256_A = "a".repeat(64);
+    private static final String SHA256_B = "b".repeat(64);
+    private static final long SIZE_A = 1024L;
+    private static final long SIZE_B = 2048L;
 
     @Container
     @ServiceConnection
@@ -54,13 +60,17 @@ class FunctionVersionArtifactPersistenceTests {
         artifactRegistry.attachPublishedArtifact(
                 functionVersion.getId(),
                 objectKey,
-                FunctionVersionArtifactRegistry.ARTIFACT_FORMAT_TAR_GZ
+                FunctionVersionArtifactRegistry.ARTIFACT_FORMAT_TAR_GZ,
+                SHA256_A,
+                SIZE_A
         );
 
         FunctionVersion retrieved = functionVersionRepository.findById(functionVersion.getId()).orElseThrow();
         assertThat(retrieved.getArtifactMetadata()).hasValueSatisfying(metadata -> {
             assertThat(metadata.objectKey()).isEqualTo(objectKey);
             assertThat(metadata.format()).isEqualTo(FunctionVersionArtifactRegistry.ARTIFACT_FORMAT_TAR_GZ);
+            assertThat(metadata.sha256()).isEqualTo(SHA256_A);
+            assertThat(metadata.sizeBytes()).isEqualTo(SIZE_A);
             assertThat(metadata.publishedAt()).isNotNull();
         });
     }
@@ -72,13 +82,17 @@ class FunctionVersionArtifactPersistenceTests {
         artifactRegistry.attachPublishedArtifact(
                 functionVersion.getId(),
                 objectKey,
-                FunctionVersionArtifactRegistry.ARTIFACT_FORMAT_TAR_GZ
+                FunctionVersionArtifactRegistry.ARTIFACT_FORMAT_TAR_GZ,
+                SHA256_A,
+                SIZE_A
         );
 
         ArtifactMetadata metadata = artifactRegistry.findArtifactMetadata(functionVersion.getId()).orElseThrow();
 
         assertThat(metadata.objectKey()).isEqualTo(objectKey);
         assertThat(metadata.format()).isEqualTo(FunctionVersionArtifactRegistry.ARTIFACT_FORMAT_TAR_GZ);
+        assertThat(metadata.sha256()).isEqualTo(SHA256_A);
+        assertThat(metadata.sizeBytes()).isEqualTo(SIZE_A);
     }
 
     @Test
@@ -90,18 +104,26 @@ class FunctionVersionArtifactPersistenceTests {
         artifactRegistry.attachPublishedArtifact(
                 versionOne.getId(),
                 FunctionVersionArtifactRegistry.artifactObjectKey(versionOne.getId()),
-                FunctionVersionArtifactRegistry.ARTIFACT_FORMAT_TAR_GZ
+                FunctionVersionArtifactRegistry.ARTIFACT_FORMAT_TAR_GZ,
+                SHA256_A,
+                SIZE_A
         );
         artifactRegistry.attachPublishedArtifact(
                 versionTwo.getId(),
                 FunctionVersionArtifactRegistry.artifactObjectKey(versionTwo.getId()),
-                FunctionVersionArtifactRegistry.ARTIFACT_FORMAT_TAR_GZ
+                FunctionVersionArtifactRegistry.ARTIFACT_FORMAT_TAR_GZ,
+                SHA256_B,
+                SIZE_B
         );
 
         assertThat(functionVersionRepository.findById(versionOne.getId()).orElseThrow().getArtifactObjectKey())
                 .isEqualTo("artifacts/" + versionOne.getId() + "/artifact.tar.gz");
         assertThat(functionVersionRepository.findById(versionTwo.getId()).orElseThrow().getArtifactObjectKey())
                 .isEqualTo("artifacts/" + versionTwo.getId() + "/artifact.tar.gz");
+        assertThat(functionVersionRepository.findById(versionOne.getId()).orElseThrow().getArtifactSha256())
+                .isEqualTo(SHA256_A);
+        assertThat(functionVersionRepository.findById(versionTwo.getId()).orElseThrow().getArtifactSha256())
+                .isEqualTo(SHA256_B);
     }
 
     @Test
@@ -113,7 +135,9 @@ class FunctionVersionArtifactPersistenceTests {
         artifactRegistry.attachPublishedArtifact(
                 versionOne.getId(),
                 FunctionVersionArtifactRegistry.artifactObjectKey(versionOne.getId()),
-                FunctionVersionArtifactRegistry.ARTIFACT_FORMAT_TAR_GZ
+                FunctionVersionArtifactRegistry.ARTIFACT_FORMAT_TAR_GZ,
+                SHA256_A,
+                SIZE_A
         );
 
         assertThat(functionVersionRepository.findById(versionOne.getId()).orElseThrow().getArtifactMetadata()).isPresent();
@@ -128,6 +152,49 @@ class FunctionVersionArtifactPersistenceTests {
         assertThat(artifactRegistry.findArtifactMetadata(functionVersion.getId())).isEmpty();
         assertThat(functionVersionRepository.findByIdAndArtifactObjectKeyIsNotNullAndArtifactFormatIsNotNull(
                 functionVersion.getId())).isEmpty();
+    }
+
+    @Test
+    void secondAttachmentForSameFunctionVersionIsRejected() {
+        FunctionVersion functionVersion = createFunctionVersion(1);
+        String objectKey = FunctionVersionArtifactRegistry.artifactObjectKey(functionVersion.getId());
+        artifactRegistry.attachPublishedArtifact(
+                functionVersion.getId(), objectKey, FunctionVersionArtifactRegistry.ARTIFACT_FORMAT_TAR_GZ, SHA256_A, SIZE_A);
+
+        assertThatThrownBy(() -> artifactRegistry.attachPublishedArtifact(
+                functionVersion.getId(), objectKey, FunctionVersionArtifactRegistry.ARTIFACT_FORMAT_TAR_GZ, SHA256_B, SIZE_B))
+                .isInstanceOf(IllegalStateException.class);
+
+        // The original artifact metadata must survive the rejected second attempt untouched.
+        FunctionVersion retrieved = functionVersionRepository.findById(functionVersion.getId()).orElseThrow();
+        assertThat(retrieved.getArtifactMetadata()).hasValueSatisfying(metadata -> {
+            assertThat(metadata.sha256()).isEqualTo(SHA256_A);
+            assertThat(metadata.sizeBytes()).isEqualTo(SIZE_A);
+        });
+    }
+
+    @Test
+    void attachingArtifactWithMismatchedObjectKeyIsRejected() {
+        FunctionVersion functionVersion = createFunctionVersion(1);
+        String wrongObjectKey = FunctionVersionArtifactRegistry.artifactObjectKey(UUID.randomUUID());
+
+        assertThatThrownBy(() -> artifactRegistry.attachPublishedArtifact(
+                functionVersion.getId(), wrongObjectKey, FunctionVersionArtifactRegistry.ARTIFACT_FORMAT_TAR_GZ, SHA256_A, SIZE_A))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        assertThat(functionVersionRepository.findById(functionVersion.getId()).orElseThrow().getArtifactMetadata()).isEmpty();
+    }
+
+    @Test
+    void secondAttachmentWithIdenticalMetadataIsStillRejected() {
+        FunctionVersion functionVersion = createFunctionVersion(1);
+        String objectKey = FunctionVersionArtifactRegistry.artifactObjectKey(functionVersion.getId());
+        artifactRegistry.attachPublishedArtifact(
+                functionVersion.getId(), objectKey, FunctionVersionArtifactRegistry.ARTIFACT_FORMAT_TAR_GZ, SHA256_A, SIZE_A);
+
+        assertThatThrownBy(() -> artifactRegistry.attachPublishedArtifact(
+                functionVersion.getId(), objectKey, FunctionVersionArtifactRegistry.ARTIFACT_FORMAT_TAR_GZ, SHA256_A, SIZE_A))
+                .isInstanceOf(IllegalStateException.class);
     }
 
     private FunctionVersion createFunctionVersion(int version) {
