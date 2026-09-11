@@ -74,10 +74,7 @@ class S3ArtifactPublisherTest {
         RecordingUploadS3ArtifactClient s3Client = new RecordingUploadS3ArtifactClient(tempDir.resolve("remote"));
         S3ArtifactPublisher publisher = new S3ArtifactPublisher(s3Client);
         publisher.publish(componentVersionId, writePreparedArtifact(componentVersionId));
-        S3ArtifactStore store = new S3ArtifactStore(
-                new InMemoryArtifactCache(tempDir.resolve("cache"), "NODE"),
-                s3Client
-        );
+        S3ArtifactStore store = new S3ArtifactStore("NODE", s3Client);
 
         ArtifactReference reference = store.resolve(componentId, componentVersionId).orElseThrow();
 

@@ -1,6 +1,5 @@
 package com.funchole.backend.runtime;
 
-import com.funchole.backend.artifact.ArtifactCache;
 import com.funchole.backend.artifact.ArtifactStore;
 import com.funchole.backend.artifact.LocalArtifactStore;
 import com.funchole.backend.artifact.S3ArtifactStore;
@@ -56,7 +55,7 @@ public final class RuntimeWorkerMain {
     ) {
         if ("s3".equalsIgnoreCase(artifactStoreType)) {
             ArtifactCache cache = new FilesystemArtifactCache(artifactCacheRoot, runtimeType);
-            return new S3ArtifactStore(cache, new S3ArtifactStoreConfig(
+            ArtifactStore remoteStore = new S3ArtifactStore(runtimeType, new S3ArtifactStoreConfig(
                     URI.create(readRequiredString("S3_ARTIFACT_ENDPOINT")),
                     readRequiredString("S3_ARTIFACT_BUCKET"),
                     readRequiredString("S3_ARTIFACT_ACCESS_KEY"),
@@ -64,6 +63,7 @@ public final class RuntimeWorkerMain {
                     readString("S3_ARTIFACT_REGION", "us-east-1"),
                     readBoolean("S3_ARTIFACT_PATH_STYLE_ACCESS", true)
             ));
+            return new CachedArtifactStore(cache, remoteStore);
         }
         if ("local".equalsIgnoreCase(artifactStoreType)) {
             return new LocalArtifactStore(artifactsRoot, runtimeType);

@@ -1,6 +1,5 @@
 package com.funchole.backend.runtime;
 
-import com.funchole.backend.artifact.ArtifactCache;
 import com.funchole.backend.artifact.ArtifactReference;
 import java.io.IOException;
 import java.nio.file.AtomicMoveNotSupportedException;
