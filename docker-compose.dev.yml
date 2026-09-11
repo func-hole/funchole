@@ -91,10 +91,21 @@ services:
       context: .
       dockerfile: Dockerfile
       target: dev-runtime
+    depends_on:
+      rustfs-init:
+        condition: service_completed_successfully
     environment:
       RUNTIME_INSTANCE_ID: runtime-node-dev-1
       RUNTIME_TYPE: NODE
       RUNTIME_WORKER_SOCKET_PATH: /tmp/funchole/runtime-node-dev-1.sock
+      ARTIFACT_STORE_TYPE: s3
+      ARTIFACT_CACHE_DIR: /tmp/funchole/artifact-cache
+      S3_ARTIFACT_ENDPOINT: http://rustfs:9000
+      S3_ARTIFACT_BUCKET: funchole-artifacts
+      S3_ARTIFACT_ACCESS_KEY: funchole
+      S3_ARTIFACT_SECRET_KEY: funchole-secret
+      S3_ARTIFACT_REGION: us-east-1
+      S3_ARTIFACT_PATH_STYLE_ACCESS: "true"
     volumes:
       - .:/workspace
       - runtime-sockets:/tmp/funchole
@@ -110,6 +121,64 @@ services:
       - "8222:8222"
     volumes:
       - nats-dev-data:/data
+    networks:
+      - funchole-dev-network
+
+  rustfs:
+    image: rustfs/rustfs:latest
+    environment:
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_CONSOLE_ADDRESS: 0.0.0.0:9001
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_ACCESS_KEY: funchole
+      RUSTFS_SECRET_KEY: funchole-secret
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - rustfs-dev-data:/data
+    networks:
+      - funchole-dev-network
+
+  rustfs-init:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev-rustfs-init
+    depends_on:
+      rustfs:
+        condition: service_started
+    environment:
+      AWS_ACCESS_KEY_ID: funchole
+      AWS_SECRET_ACCESS_KEY: funchole-secret
+      AWS_DEFAULT_REGION: us-east-1
+    volumes:
+      - ./runtime/artifacts/dev:/artifacts/dev:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+
+        until aws --endpoint-url http://rustfs:9000 s3 ls >/dev/null 2>&1; do
+          echo "Waiting for RustFS..."
+          sleep 1
+        done
+
+        aws --endpoint-url http://rustfs:9000 s3 mb s3://funchole-artifacts >/dev/null 2>&1 || true
+
+        for artifact_dir in /artifacts/dev/*; do
+          if [ ! -d "$$artifact_dir" ]; then
+            continue
+          fi
+
+          component_version_id="$$(basename "$$artifact_dir")"
+          archive="/tmp/$$component_version_id.tar.gz"
+          object_key="s3://funchole-artifacts/artifacts/$$component_version_id/artifact.tar.gz"
+
+          tar -C "$$artifact_dir" -czf "$$archive" .
+          aws --endpoint-url http://rustfs:9000 s3 cp "$$archive" "$$object_key"
+        done
     networks:
       - funchole-dev-network
 
@@ -208,6 +277,7 @@ volumes:
   web-node-modules:
   nats-dev-data:
   runtime-sockets:
+  rustfs-dev-data:
 
 networks:
   funchole-dev-network:

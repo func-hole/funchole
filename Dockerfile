@@ -147,3 +147,8 @@ RUN chmod +x /opt/funchole/dispatcher-dev-entrypoint.sh
 FROM dev-base-common AS dev-runtime
 COPY docker/runtime-dev-entrypoint.sh /opt/funchole/runtime-dev-entrypoint.sh
 RUN chmod +x /opt/funchole/runtime-dev-entrypoint.sh
+
+FROM debian:13-slim AS dev-rustfs-init
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends awscli ca-certificates gzip tar \
+    && rm -rf /var/lib/apt/lists/*

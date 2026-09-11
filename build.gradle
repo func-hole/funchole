@@ -16,6 +16,8 @@ ext {
     dnsjavaVersion = '3.6.5'
     bouncyCastleVersion = '1.81'
     natsVersion = '2.26.0'
+    awsSdkVersion = '2.29.52'
+    commonsCompressVersion = '1.27.1'
 }
 
 allprojects {
@@ -56,6 +58,7 @@ subprojects {
         imports {
             mavenBom "org.springframework.boot:spring-boot-dependencies:${springBootVersion}"
             mavenBom "org.testcontainers:testcontainers-bom:${testcontainersVersion}"
+            mavenBom "software.amazon.awssdk:bom:${awsSdkVersion}"
         }
     }
 

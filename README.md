@@ -44,13 +44,17 @@ Implemented today:
 * durable, idempotent `InvocationStepExecution` records (`READY`, attempt tracking) so JetStream redelivery cannot double-create execution intent
 * standalone `runtime-registry` module: in-memory runtime capacity registration, compatibility filtering, and deterministic (least-in-flight) selection with reservation/release
 * dispatcher selects and reserves runtime capacity via the Runtime Registry before ACK-ing an invocation
+* runtime artifact execution for pinned Node component versions
+* read-only S3-compatible artifact retrieval with local filesystem cache
+* RustFS-backed local artifact storage in development
 
 Not implemented yet:
 
-* flow execution / actual Function invocation
+* full flow execution beyond the first planned executable step
 * step progression beyond the first step (no next-step, branching, or Sub-Flow execution yet)
-* IPC and the runtime worker protocol
 * durable/distributed runtime reservation (Runtime Registry state today is in-memory per dispatcher process only)
+* artifact upload/build/deployment pipeline
+* cache eviction or artifact TTL
 * production ACME / Let's Encrypt flow
 * automatic host-machine DNS setup for custom local domains
 
@@ -215,6 +219,8 @@ Local service endpoints:
 | OpenBao | `http://localhost:8200` |
 | NATS | `localhost:4222` |
 | NATS monitoring | `http://localhost:8222` |
+| RustFS S3 API | `http://localhost:9000` |
+| RustFS Console | `http://localhost:9001` |
 | Technitium DNS UI | `http://localhost:5380` |
 
 Useful checks:
@@ -247,6 +253,8 @@ Important current behavior:
 * `gateway` serves HTTPS on port `443` in development to keep the URL shape production-like
 * development certificates are self-signed, so browser trust warnings are expected unless you trust the cert or issuing CA
 * OpenBao now uses persistent local storage in Docker instead of in-memory dev mode
+* development runtime reads artifacts through the generic S3-compatible contract, with RustFS as the local backend
+* `rustfs-init` seeds checked-in demo artifacts into RustFS before Runtime starts
 * custom local domains still require the host machine to resolve them correctly
 
 ## Contribution

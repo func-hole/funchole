@@ -23,6 +23,8 @@ docker compose -f docker-compose.dev.yml up --build
 | Gateway | `https://localhost` |
 | PostgreSQL | `localhost:5432` |
 | OpenBao | `http://localhost:8200` |
+| RustFS S3 API | `http://localhost:9000` |
+| RustFS Console | `http://localhost:9001` |
 | Technitium DNS UI | `http://localhost:5380` |
 
 ## Startup Order
@@ -33,7 +35,10 @@ Current startup sequence:
 2. OpenBao starts
 3. OpenBao bootstrap seeds required secrets
 4. `controlplane` starts and runs Flyway migrations
-5. `gateway` starts after `controlplane` is healthy
+5. RustFS starts for S3-compatible artifact storage
+6. `rustfs-init` creates the local artifact bucket and seeds checked-in demo artifacts
+7. `runtime` starts and connects to RustFS through generic S3 settings
+8. `gateway` starts after `controlplane` is healthy
 
 That dependency exists because the database schema is managed through the `controlplane` startup path.
 
@@ -87,6 +92,12 @@ Run tests:
 
 ```bash
 ./gradlew test
+```
+
+Re-seed checked-in demo Node artifacts into RustFS:
+
+```bash
+docker compose -f docker-compose.dev.yml run --rm rustfs-init
 ```
 
 ## Local Workflow
@@ -146,6 +157,40 @@ Current behavior:
 * it uses a fallback TLS context when there are no gateways yet
 * it polls PostgreSQL and OpenBao on a short interval
 * new active gateway certificates can be picked up without restarting the container
+
+## Artifact Storage Notes
+
+Runtime uses the `ArtifactStore` contract, so execution is storage-agnostic after an artifact is resolved.
+
+Development mode uses RustFS as the local S3-compatible backend:
+
+```text
+ARTIFACT_STORE_TYPE=s3
+S3_ARTIFACT_ENDPOINT=http://rustfs:9000
+S3_ARTIFACT_BUCKET=funchole-artifacts
+S3_ARTIFACT_ACCESS_KEY=funchole
+S3_ARTIFACT_SECRET_KEY=funchole-secret
+S3_ARTIFACT_REGION=us-east-1
+S3_ARTIFACT_PATH_STYLE_ACCESS=true
+```
+
+RustFS uses one persisted Docker volume in local development. Production storage topology is future design work and should not copy this local-only setup blindly.
+
+The `rustfs-init` service is development-only. It packages every checked-in demo artifact directory from `runtime/artifacts/dev/<componentVersionId>` and uploads it to RustFS so the seeded `/orders` flow can run without manual S3 setup. This is not the production artifact upload/build pipeline.
+
+Artifact object keys are immutable and based only on the pinned component version:
+
+```text
+artifacts/<componentVersionId>/artifact.tar.gz
+```
+
+Cache behavior:
+
+* cache hit resolves directly to the local `index.mjs`
+* cache miss downloads the exact S3 object key
+* the downloaded `artifact.tar.gz` is extracted into `ARTIFACT_CACHE_DIR`
+* nested artifact directories are preserved
+* `NodeExecutor` receives only the local artifact path
 
 ## OpenBao Notes
 

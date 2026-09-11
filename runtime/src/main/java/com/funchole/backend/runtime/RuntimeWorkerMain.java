@@ -1,5 +1,6 @@
 package com.funchole.backend.runtime;
 
+import java.net.URI;
 import java.nio.file.Path;
 import java.util.concurrent.CountDownLatch;
 import org.slf4j.Logger;
@@ -16,10 +17,12 @@ public final class RuntimeWorkerMain {
         String runtimeInstanceId = readString("RUNTIME_INSTANCE_ID", "runtime-node-dev-1");
         String runtimeType = readString("RUNTIME_TYPE", "NODE");
         Path artifactsRoot = Path.of(readString("ARTIFACT_DIR", "artifacts/dev"));
+        Path artifactCacheRoot = Path.of(readString("ARTIFACT_CACHE_DIR", "/tmp/funchole/artifact-cache"));
+        String artifactStoreType = readString("ARTIFACT_STORE_TYPE", "local");
         String nodeCommand = readString("NODE_COMMAND", "node");
         Path nodeExecutorScript = Path.of(readString("NODE_EXECUTOR_SCRIPT_PATH", "node/executor.mjs"));
 
-        ArtifactStore artifactStore = new LocalArtifactStore(artifactsRoot, runtimeType);
+        ArtifactStore artifactStore = createArtifactStore(artifactStoreType, artifactsRoot, artifactCacheRoot, runtimeType);
         PersistentNodeExecutor nodeExecutor = PersistentNodeExecutor.start(nodeCommand, nodeExecutorScript);
 
         RuntimeWorkerServer server = RuntimeWorkerServer.bind(
@@ -40,8 +43,44 @@ public final class RuntimeWorkerMain {
         new CountDownLatch(1).await();
     }
 
+    private static ArtifactStore createArtifactStore(
+            String artifactStoreType,
+            Path artifactsRoot,
+            Path artifactCacheRoot,
+            String runtimeType
+    ) {
+        if ("s3".equalsIgnoreCase(artifactStoreType)) {
+            ArtifactCache cache = new FilesystemArtifactCache(artifactCacheRoot, runtimeType);
+            return new S3ArtifactStore(cache, new S3ArtifactStoreConfig(
+                    URI.create(readRequiredString("S3_ARTIFACT_ENDPOINT")),
+                    readRequiredString("S3_ARTIFACT_BUCKET"),
+                    readRequiredString("S3_ARTIFACT_ACCESS_KEY"),
+                    readRequiredString("S3_ARTIFACT_SECRET_KEY"),
+                    readString("S3_ARTIFACT_REGION", "us-east-1"),
+                    readBoolean("S3_ARTIFACT_PATH_STYLE_ACCESS", true)
+            ));
+        }
+        if ("local".equalsIgnoreCase(artifactStoreType)) {
+            return new LocalArtifactStore(artifactsRoot, runtimeType);
+        }
+        throw new IllegalArgumentException("Unsupported ARTIFACT_STORE_TYPE: " + artifactStoreType);
+    }
+
     private static String readString(String name, String fallback) {
         String value = System.getenv(name);
         return value == null || value.isBlank() ? fallback : value;
+    }
+
+    private static String readRequiredString(String name) {
+        String value = System.getenv(name);
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(name + " is required");
+        }
+        return value;
+    }
+
+    private static boolean readBoolean(String name, boolean fallback) {
+        String value = System.getenv(name);
+        return value == null || value.isBlank() ? fallback : Boolean.parseBoolean(value);
     }
 }
