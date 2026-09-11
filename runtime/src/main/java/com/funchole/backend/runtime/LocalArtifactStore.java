@@ -6,21 +6,21 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Local, directory-convention-based {@link ArtifactResolver} for
- * development/tests: {@code <artifactsRoot>/<componentVersionId>/index.mjs}.
+ * First {@link ArtifactStore} implementation: the existing local directory
+ * convention ({@code <artifactsRoot>/<componentVersionId>/index.mjs}).
  *
- * The lookup key is exclusively componentVersionId - there is no directory
- * scanning, no "latest" symlink convention, and no filename-based version
- * inference. An unmapped componentVersionId simply resolves to nothing.
+ * The lookup key is exclusively componentVersionId - no directory scanning,
+ * no "latest" symlink convention, no filename-based version inference. An
+ * unmapped componentVersionId simply resolves to nothing.
  */
-public final class DirectoryArtifactResolver implements ArtifactResolver {
+public final class LocalArtifactStore implements ArtifactStore {
 
     private static final String ENTRY_POINT_FILE_NAME = "index.mjs";
 
     private final Path artifactsRoot;
     private final String runtimeType;
 
-    public DirectoryArtifactResolver(Path artifactsRoot, String runtimeType) {
+    public LocalArtifactStore(Path artifactsRoot, String runtimeType) {
         this.artifactsRoot = artifactsRoot;
         this.runtimeType = runtimeType;
     }

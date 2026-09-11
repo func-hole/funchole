@@ -11,7 +11,7 @@ import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-class DirectoryArtifactResolverTest {
+class LocalArtifactStoreTest {
 
     @TempDir
     Path artifactsRoot;
@@ -21,9 +21,9 @@ class DirectoryArtifactResolverTest {
         UUID componentId = UUID.randomUUID();
         UUID componentVersionId = UUID.randomUUID();
         writeArtifact(componentVersionId, "export async function handler(input) { return { ok: true }; }");
-        ArtifactResolver resolver = new DirectoryArtifactResolver(artifactsRoot, "NODE");
+        ArtifactStore store = new LocalArtifactStore(artifactsRoot, "NODE");
 
-        Optional<ArtifactReference> resolved = resolver.resolve(componentId, componentVersionId);
+        Optional<ArtifactReference> resolved = store.resolve(componentId, componentVersionId);
 
         assertTrue(resolved.isPresent());
         assertEquals(componentId, resolved.get().componentId());
@@ -39,9 +39,9 @@ class DirectoryArtifactResolverTest {
         UUID versionB = UUID.randomUUID();
         writeArtifact(versionA, "export async function handler() { return 'A'; }");
         writeArtifact(versionB, "export async function handler() { return 'B'; }");
-        ArtifactResolver resolver = new DirectoryArtifactResolver(artifactsRoot, "NODE");
+        ArtifactStore store = new LocalArtifactStore(artifactsRoot, "NODE");
 
-        Optional<ArtifactReference> resolved = resolver.resolve(componentId, versionA);
+        Optional<ArtifactReference> resolved = store.resolve(componentId, versionA);
 
         assertTrue(resolved.isPresent());
         assertEquals(versionA, resolved.get().componentVersionId());
@@ -51,9 +51,9 @@ class DirectoryArtifactResolverTest {
 
     @Test
     void resolvesEmptyForUnknownComponentVersion() {
-        ArtifactResolver resolver = new DirectoryArtifactResolver(artifactsRoot, "NODE");
+        ArtifactStore store = new LocalArtifactStore(artifactsRoot, "NODE");
 
-        Optional<ArtifactReference> resolved = resolver.resolve(UUID.randomUUID(), UUID.randomUUID());
+        Optional<ArtifactReference> resolved = store.resolve(UUID.randomUUID(), UUID.randomUUID());
 
         assertTrue(resolved.isEmpty());
     }

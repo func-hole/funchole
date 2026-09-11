@@ -47,7 +47,7 @@ public final class RuntimeWorkerServer implements AutoCloseable {
     private final Path socketPath;
     private final String runtimeInstanceId;
     private final String runtimeType;
-    private final ArtifactResolver artifactResolver;
+    private final ArtifactStore artifactStore;
     private final NodeExecutor nodeExecutor;
     private final RuntimeInvokeValidator validator;
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -59,14 +59,14 @@ public final class RuntimeWorkerServer implements AutoCloseable {
             Path socketPath,
             String runtimeInstanceId,
             String runtimeType,
-            ArtifactResolver artifactResolver,
+            ArtifactStore artifactStore,
             NodeExecutor nodeExecutor
     ) {
         this.serverChannel = serverChannel;
         this.socketPath = socketPath;
         this.runtimeInstanceId = runtimeInstanceId;
         this.runtimeType = runtimeType;
-        this.artifactResolver = artifactResolver;
+        this.artifactStore = artifactStore;
         this.nodeExecutor = nodeExecutor;
         this.validator = new RuntimeInvokeValidator(runtimeType);
     }
@@ -80,14 +80,14 @@ public final class RuntimeWorkerServer implements AutoCloseable {
             Path socketPath,
             String runtimeInstanceId,
             String runtimeType,
-            ArtifactResolver artifactResolver,
+            ArtifactStore artifactStore,
             NodeExecutor nodeExecutor
     ) throws IOException {
         prepareSocketPath(socketPath);
         ServerSocketChannel serverChannel = ServerSocketChannel.open(StandardProtocolFamily.UNIX);
         serverChannel.bind(UnixDomainSocketAddress.of(socketPath));
         return new RuntimeWorkerServer(
-                serverChannel, socketPath, runtimeInstanceId, runtimeType, artifactResolver, nodeExecutor);
+                serverChannel, socketPath, runtimeInstanceId, runtimeType, artifactStore, nodeExecutor);
     }
 
     /**
@@ -261,7 +261,7 @@ public final class RuntimeWorkerServer implements AutoCloseable {
             return;
         }
 
-        Optional<ArtifactReference> artifact = artifactResolver.resolve(payload.componentId(), payload.componentVersionId());
+        Optional<ArtifactReference> artifact = artifactStore.resolve(payload.componentId(), payload.componentVersionId());
         if (artifact.isEmpty()) {
             distributeTerminal(state, RuntimeTerminalMessage.error(
                     message.executionId(),

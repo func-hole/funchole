@@ -19,14 +19,14 @@ public final class RuntimeWorkerMain {
         String nodeCommand = readString("NODE_COMMAND", "node");
         Path nodeExecutorScript = Path.of(readString("NODE_EXECUTOR_SCRIPT_PATH", "node/executor.mjs"));
 
-        ArtifactResolver artifactResolver = new DirectoryArtifactResolver(artifactsRoot, runtimeType);
+        ArtifactStore artifactStore = new LocalArtifactStore(artifactsRoot, runtimeType);
         PersistentNodeExecutor nodeExecutor = PersistentNodeExecutor.start(nodeCommand, nodeExecutorScript);
 
         RuntimeWorkerServer server = RuntimeWorkerServer.bind(
                 socketPath,
                 runtimeInstanceId,
                 runtimeType,
-                artifactResolver,
+                artifactStore,
                 nodeExecutor
         );
         server.start();

@@ -56,8 +56,8 @@ class RuntimeWorkerServerTest {
         // deliberately avoids Files.createTempDirectory() - the default JDK temp
         // directory (e.g. macOS's /var/folders/.../T/) is often already too long.
         socketPath = Path.of("/tmp", "fh-worker-test-" + UUID.randomUUID().toString().substring(0, 8) + ".sock");
-        ArtifactResolver artifactResolver = new DirectoryArtifactResolver(artifactsRoot, "NODE");
-        server = RuntimeWorkerServer.bind(socketPath, "runtime-node-test-1", "NODE", artifactResolver, nodeExecutor);
+        ArtifactStore artifactStore = new LocalArtifactStore(artifactsRoot, "NODE");
+        server = RuntimeWorkerServer.bind(socketPath, "runtime-node-test-1", "NODE", artifactStore, nodeExecutor);
         server.start();
     }
 
