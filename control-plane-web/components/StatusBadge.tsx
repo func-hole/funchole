@@ -1,21 +1,23 @@
 const STATUS_STYLES: Record<string, string> = {
-  ACTIVE: "bg-green-100 text-green-700 dark:bg-green-950/60 dark:text-green-400",
-  VERIFIED: "bg-green-100 text-green-700 dark:bg-green-950/60 dark:text-green-400",
-  PENDING: "bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-400",
-  FAILED: "bg-red-100 text-red-700 dark:bg-red-950/60 dark:text-red-400",
-  REJECTED: "bg-red-100 text-red-700 dark:bg-red-950/60 dark:text-red-400",
-  EXPIRED: "bg-red-100 text-red-700 dark:bg-red-950/60 dark:text-red-400",
-  INACTIVE: "bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400",
+  ACTIVE: "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400",
+  VERIFIED: "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400",
+  ADOPTED: "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400",
+  PENDING: "bg-amber-100 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400",
+  DRAFT: "bg-amber-100 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400",
+  FAILED: "bg-rose-100 text-rose-700 dark:bg-rose-500/10 dark:text-rose-400",
+  REJECTED: "bg-rose-100 text-rose-700 dark:bg-rose-500/10 dark:text-rose-400",
+  EXPIRED: "bg-rose-100 text-rose-700 dark:bg-rose-500/10 dark:text-rose-400",
+  ARCHIVED: "bg-rose-100 text-rose-700 dark:bg-rose-500/10 dark:text-rose-400",
+  INACTIVE: "bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-400",
 };
 
 export function StatusBadge({ status }: { status: string }) {
-  const style =
-    STATUS_STYLES[status] ??
-    "bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400";
+  const style = STATUS_STYLES[status] ?? "bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-400";
   return (
     <span
-      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${style}`}
+      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${style}`}
     >
+      <span className="h-1.5 w-1.5 rounded-full bg-current" />
       {status}
     </span>
   );

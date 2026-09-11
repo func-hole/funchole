@@ -6,6 +6,10 @@ export type CertificateProvider = "SELF_SIGNED" | "LETS_ENCRYPT";
 
 export type CertificateStatus = "PENDING" | "ACTIVE" | "FAILED" | "EXPIRED";
 
+export type FlowVersionStatus = "DRAFT" | "ADOPTED" | "ARCHIVED";
+
+export type FlowStepComponentType = "FUNCTION" | "RESPONSE";
+
 export interface AuthTokenResponse {
   accessToken: string;
   tokenType: string;
@@ -69,6 +73,84 @@ export interface GatewayCreateRequest {
 }
 
 export type GatewayUpdateRequest = GatewayCreateRequest;
+
+export interface FlowResponse {
+  id: string;
+  gatewayId: string;
+  gatewayName: string;
+  activeFlowVersionId: string | null;
+  activeFlowVersionStatus: FlowVersionStatus | null;
+  flowKey: string;
+  name: string;
+  description: string | null;
+  httpMethod: string;
+  path: string;
+  priority: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FlowCreateRequest {
+  flowKey: string;
+  name: string;
+  description?: string | null;
+  gatewayId: string;
+  httpMethod: string;
+  path: string;
+  priority?: number | null;
+}
+
+export interface FlowUpdateRequest {
+  name: string;
+  description?: string | null;
+  gatewayId: string;
+  httpMethod: string;
+  path: string;
+  priority?: number | null;
+}
+
+export interface FlowStepResponse {
+  id: string;
+  flowVersionId: string;
+  stepKey: string;
+  componentType: FlowStepComponentType;
+  position: number;
+  componentId: string;
+  componentVersionId: string;
+  metadata: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FlowStepCreateRequest {
+  stepKey: string;
+  componentType: FlowStepComponentType;
+  position: number;
+  componentId: string;
+  componentVersionId: string;
+  metadata?: string | null;
+}
+
+export type FlowStepUpdateRequest = FlowStepCreateRequest;
+
+export interface FlowVersionResponse {
+  id: string;
+  flowId: string;
+  version: number;
+  status: FlowVersionStatus;
+  runtime: string;
+  metadata: string | null;
+  steps: FlowStepResponse[] | null;
+  createdAt: string;
+  updatedAt: string;
+  adoptedAt: string | null;
+  archivedAt: string | null;
+}
+
+export interface FlowVersionCreateRequest {
+  runtime?: string | null;
+  metadata?: string | null;
+}
 
 export interface PaginationResponse<T> {
   items: T[];

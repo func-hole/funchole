@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "control-plane-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "control-plane-web", "run", "dev"],
+      "port": 3000
+    }
+  ]
+}

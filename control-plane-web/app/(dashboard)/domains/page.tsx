@@ -3,6 +3,10 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Pagination } from "@/components/Pagination";
 import { StatusBadge } from "@/components/StatusBadge";
+import { panelClass, Panel } from "@/components/Panel";
+import { Button } from "@/components/Button";
+import { inputClass } from "@/components/Input";
+import { PlusIcon } from "@/components/icons";
 import { api, ApiError } from "@/lib/api";
 import type { DomainResponse, PaginationResponse } from "@/lib/types";
 
@@ -63,48 +67,35 @@ export default function DomainsPage() {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-zinc-950 dark:text-zinc-50">
-          Domains
-        </h1>
-        <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-          Register a domain, then start verification to prove ownership.
-        </p>
+        <h1 className="text-2xl font-semibold tracking-tight text-foreground">Domains</h1>
+        <p className="mt-1 text-sm text-muted">Register a domain, then start verification to prove ownership.</p>
       </div>
 
-      <form
-        onSubmit={handleCreate}
-        className="flex flex-wrap items-start gap-3 rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950"
-      >
+      <form onSubmit={handleCreate} className={`${panelClass} flex flex-wrap items-start gap-3 p-4`}>
         <input
           type="text"
           required
           placeholder="example.com"
           value={domainName}
           onChange={(e) => setDomainName(e.target.value)}
-          className="h-10 flex-1 min-w-56 rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-950 outline-none focus:border-zinc-950 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50 dark:focus:border-zinc-100"
+          className={`${inputClass} min-w-56 flex-1`}
         />
-        <button
-          type="submit"
-          disabled={busy}
-          className="h-10 rounded-lg bg-zinc-950 px-4 text-sm font-medium text-white transition-colors hover:bg-zinc-800 disabled:opacity-50 dark:bg-white dark:text-zinc-950 dark:hover:bg-zinc-200"
-        >
+        <Button type="submit" variant="primary" disabled={busy}>
+          <PlusIcon className="h-4 w-4" />
           Add domain
-        </button>
+        </Button>
       </form>
 
       {error && (
-        <p
-          role="alert"
-          className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600 dark:bg-red-950/50 dark:text-red-400"
-        >
+        <p role="alert" className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-600 dark:bg-rose-500/10 dark:text-rose-400">
           {error}
         </p>
       )}
 
-      <div className="overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
+      <Panel className="overflow-hidden">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-zinc-200 text-left text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+            <tr className="border-b border-border text-left text-muted">
               <th className="px-4 py-3 font-medium">Domain</th>
               <th className="px-4 py-3 font-medium">Status</th>
               <th className="px-4 py-3 font-medium">Verification code</th>
@@ -114,48 +105,39 @@ export default function DomainsPage() {
           <tbody>
             {!domains && (
               <tr>
-                <td colSpan={4} className="px-4 py-8 text-center text-zinc-500">
+                <td colSpan={4} className="px-4 py-8 text-center text-muted">
                   Loading…
                 </td>
               </tr>
             )}
             {domains?.items.length === 0 && (
               <tr>
-                <td colSpan={4} className="px-4 py-8 text-center text-zinc-500">
+                <td colSpan={4} className="px-4 py-8 text-center text-muted">
                   No domains yet. Add one above.
                 </td>
               </tr>
             )}
             {domains?.items.map((domain) => (
-              <tr
-                key={domain.id}
-                className="border-b border-zinc-100 last:border-0 dark:border-zinc-900"
-              >
-                <td className="px-4 py-3 font-medium text-zinc-950 dark:text-zinc-50">
-                  {domain.domainName}
-                </td>
+              <tr key={domain.id} className="border-b border-border last:border-0 hover:bg-surface-hover">
+                <td className="px-4 py-3 font-medium text-foreground">{domain.domainName}</td>
                 <td className="px-4 py-3">
                   <StatusBadge status={domain.status} />
                 </td>
-                <td className="px-4 py-3 font-mono text-xs text-zinc-500 dark:text-zinc-400">
+                <td className="px-4 py-3 font-mono text-xs text-muted">
                   {domain.verificationCode ?? "—"}
                 </td>
                 <td className="px-4 py-3 text-right">
                   {domain.status === "PENDING" && (
-                    <button
-                      type="button"
-                      onClick={() => handleVerify(domain)}
-                      className="rounded-lg border border-zinc-200 px-3 py-1.5 text-xs transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
-                    >
+                    <Button variant="secondary" size="sm" onClick={() => handleVerify(domain)}>
                       Verify
-                    </button>
+                    </Button>
                   )}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
-      </div>
+      </Panel>
 
       {domains && (
         <Pagination

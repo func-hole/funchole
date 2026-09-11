@@ -3,6 +3,10 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Pagination } from "@/components/Pagination";
 import { StatusBadge } from "@/components/StatusBadge";
+import { Panel, panelClass } from "@/components/Panel";
+import { Button } from "@/components/Button";
+import { inputClass, labelClass, fieldClass } from "@/components/Input";
+import { PlusIcon, PencilIcon, TrashIcon } from "@/components/icons";
 import { api, ApiError } from "@/lib/api";
 import type {
   DomainResponse,
@@ -104,9 +108,7 @@ export default function GatewaysPage() {
       closeForm();
       refresh();
     } catch (err) {
-      setError(
-        err instanceof ApiError ? err.message : "Failed to save gateway"
-      );
+      setError(err instanceof ApiError ? err.message : "Failed to save gateway");
     } finally {
       setBusy(false);
     }
@@ -125,43 +127,29 @@ export default function GatewaysPage() {
     }
   }
 
-  const inputClass =
-    "h-10 w-full rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-950 outline-none focus:border-zinc-950 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50 dark:focus:border-zinc-100";
-
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-zinc-950 dark:text-zinc-50">
-            Gateways
-          </h1>
-          <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-            Each gateway gets a unique key under a verified domain.
-          </p>
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">Gateways</h1>
+          <p className="mt-1 text-sm text-muted">Each gateway gets a unique key under a verified domain.</p>
         </div>
-        <button
-          type="button"
-          onClick={openCreate}
-          disabled={domains.length === 0}
-          className="h-10 rounded-lg bg-zinc-950 px-4 text-sm font-medium text-white transition-colors hover:bg-zinc-800 disabled:opacity-50 dark:bg-white dark:text-zinc-950 dark:hover:bg-zinc-200"
-        >
+        <Button variant="primary" onClick={openCreate} disabled={domains.length === 0}>
+          <PlusIcon className="h-4 w-4" />
           New gateway
-        </button>
+        </Button>
       </div>
 
       {domains.length === 0 && (
-        <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-700 dark:bg-amber-950/50 dark:text-amber-400">
+        <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
           You need at least one verified domain before creating a gateway.
         </p>
       )}
 
       {form && (
-        <form
-          onSubmit={handleSubmit}
-          className="grid gap-4 rounded-xl border border-zinc-200 bg-white p-4 sm:grid-cols-2 dark:border-zinc-800 dark:bg-zinc-950"
-        >
-          <label className="flex flex-col gap-1.5">
-            <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Name</span>
+        <form onSubmit={handleSubmit} className={`${panelClass} grid gap-4 p-4 sm:grid-cols-2`}>
+          <label className={fieldClass}>
+            <span className={labelClass}>Name</span>
             <input
               type="text"
               required
@@ -171,10 +159,8 @@ export default function GatewaysPage() {
               className={inputClass}
             />
           </label>
-          <label className="flex flex-col gap-1.5">
-            <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-              Description
-            </span>
+          <label className={fieldClass}>
+            <span className={labelClass}>Description</span>
             <input
               type="text"
               maxLength={1000}
@@ -183,10 +169,8 @@ export default function GatewaysPage() {
               className={inputClass}
             />
           </label>
-          <label className="flex flex-col gap-1.5">
-            <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-              Domain
-            </span>
+          <label className={fieldClass}>
+            <span className={labelClass}>Domain</span>
             <select
               required
               value={form.appDomainId}
@@ -200,10 +184,8 @@ export default function GatewaysPage() {
               ))}
             </select>
           </label>
-          <label className="flex flex-col gap-1.5">
-            <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-              Status
-            </span>
+          <label className={fieldClass}>
+            <span className={labelClass}>Status</span>
             <select
               value={form.status}
               onChange={(e) => setForm({ ...form, status: e.target.value as GatewayStatus })}
@@ -214,37 +196,26 @@ export default function GatewaysPage() {
             </select>
           </label>
           <div className="flex gap-2 sm:col-span-2">
-            <button
-              type="submit"
-              disabled={busy}
-              className="h-10 rounded-lg bg-zinc-950 px-4 text-sm font-medium text-white transition-colors hover:bg-zinc-800 disabled:opacity-50 dark:bg-white dark:text-zinc-950 dark:hover:bg-zinc-200"
-            >
+            <Button type="submit" variant="primary" disabled={busy}>
               {editingId ? "Save changes" : "Create gateway"}
-            </button>
-            <button
-              type="button"
-              onClick={closeForm}
-              className="h-10 rounded-lg border border-zinc-200 px-4 text-sm transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
-            >
+            </Button>
+            <Button type="button" variant="secondary" onClick={closeForm}>
               Cancel
-            </button>
+            </Button>
           </div>
         </form>
       )}
 
       {error && (
-        <p
-          role="alert"
-          className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600 dark:bg-red-950/50 dark:text-red-400"
-        >
+        <p role="alert" className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-600 dark:bg-rose-500/10 dark:text-rose-400">
           {error}
         </p>
       )}
 
-      <div className="overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
+      <Panel className="overflow-hidden">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-zinc-200 text-left text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+            <tr className="border-b border-border text-left text-muted">
               <th className="px-4 py-3 font-medium">Name</th>
               <th className="px-4 py-3 font-medium">Host</th>
               <th className="px-4 py-3 font-medium">Status</th>
@@ -255,32 +226,25 @@ export default function GatewaysPage() {
           <tbody>
             {!gateways && (
               <tr>
-                <td colSpan={5} className="px-4 py-8 text-center text-zinc-500">
+                <td colSpan={5} className="px-4 py-8 text-center text-muted">
                   Loading…
                 </td>
               </tr>
             )}
             {gateways?.items.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-4 py-8 text-center text-zinc-500">
+                <td colSpan={5} className="px-4 py-8 text-center text-muted">
                   No gateways yet.
                 </td>
               </tr>
             )}
             {gateways?.items.map((gateway) => (
-              <tr
-                key={gateway.id}
-                className="border-b border-zinc-100 last:border-0 dark:border-zinc-900"
-              >
+              <tr key={gateway.id} className="border-b border-border last:border-0 hover:bg-surface-hover">
                 <td className="px-4 py-3">
-                  <p className="font-medium text-zinc-950 dark:text-zinc-50">{gateway.name}</p>
-                  {gateway.description && (
-                    <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                      {gateway.description}
-                    </p>
-                  )}
+                  <p className="font-medium text-foreground">{gateway.name}</p>
+                  {gateway.description && <p className="text-xs text-muted">{gateway.description}</p>}
                 </td>
-                <td className="px-4 py-3 font-mono text-xs text-zinc-500 dark:text-zinc-400">
+                <td className="px-4 py-3 font-mono text-xs text-muted">
                   {gateway.uniqueKey}.{gateway.domainName}
                 </td>
                 <td className="px-4 py-3">
@@ -288,36 +252,26 @@ export default function GatewaysPage() {
                 </td>
                 <td className="px-4 py-3">
                   {gateway.certificate ? (
-                    <div className="flex items-center gap-2">
-                      <StatusBadge status={gateway.certificate.status} />
-                    </div>
+                    <StatusBadge status={gateway.certificate.status} />
                   ) : (
-                    <span className="text-xs text-zinc-500 dark:text-zinc-400">—</span>
+                    <span className="text-xs text-muted">—</span>
                   )}
                 </td>
                 <td className="px-4 py-3 text-right">
                   <div className="flex justify-end gap-2">
-                    <button
-                      type="button"
-                      onClick={() => openEdit(gateway)}
-                      className="rounded-lg border border-zinc-200 px-3 py-1.5 text-xs transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
-                    >
-                      Edit
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleDelete(gateway)}
-                      className="rounded-lg border border-red-200 px-3 py-1.5 text-xs text-red-600 transition-colors hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950/50"
-                    >
-                      Delete
-                    </button>
+                    <Button variant="ghost" size="icon" title="Edit" onClick={() => openEdit(gateway)}>
+                      <PencilIcon className="h-4 w-4" />
+                    </Button>
+                    <Button variant="danger" size="icon" title="Delete" onClick={() => handleDelete(gateway)}>
+                      <TrashIcon className="h-4 w-4" />
+                    </Button>
                   </div>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
-      </div>
+      </Panel>
 
       {gateways && (
         <Pagination

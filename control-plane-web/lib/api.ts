@@ -5,6 +5,14 @@ import type {
   AuthTokenResponse,
   DomainCreateRequest,
   DomainResponse,
+  FlowCreateRequest,
+  FlowResponse,
+  FlowStepCreateRequest,
+  FlowStepResponse,
+  FlowStepUpdateRequest,
+  FlowUpdateRequest,
+  FlowVersionCreateRequest,
+  FlowVersionResponse,
   GatewayCreateRequest,
   GatewayResponse,
   GatewayUpdateRequest,
@@ -120,5 +128,92 @@ export const api = {
 
   deleteGateway(id: string): Promise<Record<string, string>> {
     return request(`/api/v1/gateways/${id}`, { method: "DELETE" });
+  },
+
+  listFlows(page: number, size: number): Promise<PaginationResponse<FlowResponse>> {
+    return request(`/api/v1/flows?page=${page}&size=${size}`);
+  },
+
+  getFlow(id: string): Promise<FlowResponse> {
+    return request(`/api/v1/flows/${id}`);
+  },
+
+  createFlow(payload: FlowCreateRequest): Promise<FlowResponse> {
+    return request("/api/v1/flows", { method: "POST", body: JSON.stringify(payload) });
+  },
+
+  updateFlow(id: string, payload: FlowUpdateRequest): Promise<FlowResponse> {
+    return request(`/api/v1/flows/${id}`, { method: "PUT", body: JSON.stringify(payload) });
+  },
+
+  deleteFlow(id: string): Promise<Record<string, string>> {
+    return request(`/api/v1/flows/${id}`, { method: "DELETE" });
+  },
+
+  listFlowVersions(
+    flowId: string,
+    page: number,
+    size: number
+  ): Promise<PaginationResponse<FlowVersionResponse>> {
+    return request(`/api/v1/flows/${flowId}/versions?page=${page}&size=${size}`);
+  },
+
+  getFlowVersion(flowId: string, versionId: string): Promise<FlowVersionResponse> {
+    return request(`/api/v1/flows/${flowId}/versions/${versionId}`);
+  },
+
+  createFlowVersion(
+    flowId: string,
+    payload: FlowVersionCreateRequest
+  ): Promise<FlowVersionResponse> {
+    return request(`/api/v1/flows/${flowId}/versions`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  adoptFlowVersion(flowId: string, versionId: string): Promise<FlowVersionResponse> {
+    return request(`/api/v1/flows/${flowId}/versions/${versionId}/adopt`, { method: "POST" });
+  },
+
+  archiveFlowVersion(flowId: string, versionId: string): Promise<FlowVersionResponse> {
+    return request(`/api/v1/flows/${flowId}/versions/${versionId}/archive`, { method: "POST" });
+  },
+
+  deleteFlowVersion(flowId: string, versionId: string): Promise<Record<string, string>> {
+    return request(`/api/v1/flows/${flowId}/versions/${versionId}`, { method: "DELETE" });
+  },
+
+  listFlowSteps(flowId: string, versionId: string): Promise<FlowStepResponse[]> {
+    return request(`/api/v1/flows/${flowId}/versions/${versionId}/steps`);
+  },
+
+  createFlowStep(
+    flowId: string,
+    versionId: string,
+    payload: FlowStepCreateRequest
+  ): Promise<FlowStepResponse> {
+    return request(`/api/v1/flows/${flowId}/versions/${versionId}/steps`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  updateFlowStep(
+    flowId: string,
+    versionId: string,
+    stepId: string,
+    payload: FlowStepUpdateRequest
+  ): Promise<FlowStepResponse> {
+    return request(`/api/v1/flows/${flowId}/versions/${versionId}/steps/${stepId}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  deleteFlowStep(flowId: string, versionId: string, stepId: string): Promise<Record<string, string>> {
+    return request(`/api/v1/flows/${flowId}/versions/${versionId}/steps/${stepId}`, {
+      method: "DELETE",
+    });
   },
 };
