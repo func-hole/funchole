@@ -1,0 +1,2 @@
+ALTER TABLE function_versions
+ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'DRAFT';

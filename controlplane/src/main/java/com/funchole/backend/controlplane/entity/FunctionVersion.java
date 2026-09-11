@@ -1,7 +1,10 @@
 package com.funchole.backend.controlplane.entity;
 
+import com.funchole.backend.controlplane.constant.FunctionVersionStatus;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.FetchType;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
@@ -29,6 +32,10 @@ public class FunctionVersion {
 
     @Column(nullable = false, length = 100)
     private String runtime;
+
+    @Column(nullable = false, length = 20)
+    @Enumerated(EnumType.STRING)
+    private FunctionVersionStatus status;
 
     @Column(name = "artifact_object_key", length = 2048)
     private String artifactObjectKey;
@@ -69,6 +76,10 @@ public class FunctionVersion {
 
     public String getRuntime() {
         return runtime;
+    }
+
+    public FunctionVersionStatus getStatus() {
+        return status;
     }
 
     public Optional<ArtifactMetadata> getArtifactMetadata() {
@@ -119,6 +130,21 @@ public class FunctionVersion {
         this.updatedAt = this.artifactPublishedAt;
     }
 
+    public void markPublishing() {
+        this.status = FunctionVersionStatus.PUBLISHING;
+        this.updatedAt = OffsetDateTime.now();
+    }
+
+    public void markReady() {
+        this.status = FunctionVersionStatus.READY;
+        this.updatedAt = OffsetDateTime.now();
+    }
+
+    public void markFailed() {
+        this.status = FunctionVersionStatus.FAILED;
+        this.updatedAt = OffsetDateTime.now();
+    }
+
     public static FunctionVersion create(Function function, int version, String runtime, String metadata) {
         FunctionVersion functionVersion = new FunctionVersion();
         OffsetDateTime now = OffsetDateTime.now();
@@ -126,6 +152,7 @@ public class FunctionVersion {
         functionVersion.function = function;
         functionVersion.version = version;
         functionVersion.runtime = runtime;
+        functionVersion.status = FunctionVersionStatus.DRAFT;
         functionVersion.metadata = metadata;
         functionVersion.createdAt = now;
         functionVersion.updatedAt = now;
