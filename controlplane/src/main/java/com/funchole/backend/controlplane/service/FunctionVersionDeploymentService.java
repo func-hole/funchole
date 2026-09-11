@@ -1,8 +1,8 @@
 package com.funchole.backend.controlplane.service;
 
+import com.funchole.backend.artifact.ArtifactPublisher;
+import com.funchole.backend.artifact.PublishedArtifact;
 import com.funchole.backend.controlplane.entity.FunctionVersion;
-import com.funchole.backend.runtime.ArtifactPublisher;
-import com.funchole.backend.runtime.PublishedArtifact;
 import java.nio.file.Path;
 import java.util.UUID;
 

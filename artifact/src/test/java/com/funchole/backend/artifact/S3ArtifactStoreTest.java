@@ -1,4 +1,4 @@
-package com.funchole.backend.runtime;
+package com.funchole.backend.artifact;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -31,7 +31,7 @@ class S3ArtifactStoreTest {
     void cacheHitDoesNotAccessS3() throws Exception {
         UUID componentId = UUID.randomUUID();
         UUID componentVersionId = UUID.randomUUID();
-        FilesystemArtifactCache cache = new FilesystemArtifactCache(tempDir.resolve("cache"), "NODE");
+        InMemoryArtifactCache cache = new InMemoryArtifactCache(tempDir.resolve("cache"), "NODE");
         Path source = writeArtifactDirectory(componentVersionId, "export async function handler() { return 'hit'; }");
         cache.put(componentId, componentVersionId, source);
         RecordingS3ArtifactClient s3Client = new RecordingS3ArtifactClient();
@@ -51,7 +51,7 @@ class S3ArtifactStoreTest {
         Path archive = writeArchive(Map.of("index.mjs", "export async function handler() { return 'remote'; }"));
         RecordingS3ArtifactClient s3Client = new RecordingS3ArtifactClient();
         s3Client.put(S3ArtifactStore.objectKey(componentVersionId), archive);
-        FilesystemArtifactCache cache = new FilesystemArtifactCache(tempDir.resolve("cache"), "NODE");
+        InMemoryArtifactCache cache = new InMemoryArtifactCache(tempDir.resolve("cache"), "NODE");
         S3ArtifactStore store = new S3ArtifactStore(cache, s3Client);
 
         Optional<ArtifactReference> resolved = store.resolve(componentId, componentVersionId);
@@ -74,12 +74,12 @@ class S3ArtifactStoreTest {
         RecordingS3ArtifactClient s3Client = new RecordingS3ArtifactClient();
         s3Client.put(S3ArtifactStore.objectKey(componentVersionId), archive);
         Path cacheRoot = tempDir.resolve("cache");
-        S3ArtifactStore store = new S3ArtifactStore(new FilesystemArtifactCache(cacheRoot, "NODE"), s3Client);
+        S3ArtifactStore store = new S3ArtifactStore(new InMemoryArtifactCache(cacheRoot, "NODE"), s3Client);
 
         ArtifactReference resolved = store.resolve(componentId, componentVersionId).orElseThrow();
 
         Path cacheEntry = cacheRoot.resolve(componentVersionId.toString());
-        assertEquals(cacheEntry.resolve("index.mjs").toAbsolutePath(), resolved.artifactPath());
+        assertEquals(cacheEntry.resolve("index.mjs"), resolved.artifactPath());
         assertTrue(Files.isRegularFile(cacheEntry.resolve("lib/value.mjs")));
         assertTrue(Files.isRegularFile(cacheEntry.resolve("config/settings.json")));
     }
@@ -90,7 +90,7 @@ class S3ArtifactStoreTest {
         UUID componentVersionId = UUID.randomUUID();
         RecordingS3ArtifactClient s3Client = new RecordingS3ArtifactClient();
         S3ArtifactStore store = new S3ArtifactStore(
-                new FilesystemArtifactCache(tempDir.resolve("cache"), "NODE"),
+                new InMemoryArtifactCache(tempDir.resolve("cache"), "NODE"),
                 s3Client
         );
 
@@ -108,7 +108,7 @@ class S3ArtifactStoreTest {
         RecordingS3ArtifactClient s3Client = new RecordingS3ArtifactClient();
         s3Client.blockDownloads(1);
         S3ArtifactStore store = new S3ArtifactStore(
-                new FilesystemArtifactCache(tempDir.resolve("cache"), "NODE"),
+                new InMemoryArtifactCache(tempDir.resolve("cache"), "NODE"),
                 s3Client
         );
 
@@ -135,7 +135,7 @@ class S3ArtifactStoreTest {
         s3Client.put(S3ArtifactStore.objectKey(versionA), writeArchive(Map.of("index.mjs", "export async function handler() { return 'A'; }")));
         s3Client.put(S3ArtifactStore.objectKey(versionB), writeArchive(Map.of("index.mjs", "export async function handler() { return 'B'; }")));
         Path cacheRoot = tempDir.resolve("cache");
-        S3ArtifactStore store = new S3ArtifactStore(new FilesystemArtifactCache(cacheRoot, "NODE"), s3Client);
+        S3ArtifactStore store = new S3ArtifactStore(new InMemoryArtifactCache(cacheRoot, "NODE"), s3Client);
 
         ArtifactReference artifactA = store.resolve(componentId, versionA).orElseThrow();
         ArtifactReference artifactB = store.resolve(componentId, versionB).orElseThrow();
@@ -159,7 +159,7 @@ class S3ArtifactStoreTest {
         s3Client.put(S3ArtifactStore.objectKey(componentVersionId), archive);
         s3Client.blockDownloads(1);
         Path cacheRoot = tempDir.resolve("cache");
-        S3ArtifactStore store = new S3ArtifactStore(new FilesystemArtifactCache(cacheRoot, "NODE"), s3Client);
+        S3ArtifactStore store = new S3ArtifactStore(new InMemoryArtifactCache(cacheRoot, "NODE"), s3Client);
         CountDownLatch ready = new CountDownLatch(2);
         CountDownLatch start = new CountDownLatch(1);
 
@@ -195,7 +195,7 @@ class S3ArtifactStoreTest {
         s3Client.put(S3ArtifactStore.objectKey(versionA), writeArchive(Map.of("index.mjs", "export async function handler() { return 'A'; }")));
         s3Client.put(S3ArtifactStore.objectKey(versionB), writeArchive(Map.of("index.mjs", "export async function handler() { return 'B'; }")));
         s3Client.blockDownloads(2);
-        S3ArtifactStore store = new S3ArtifactStore(new FilesystemArtifactCache(tempDir.resolve("cache"), "NODE"), s3Client);
+        S3ArtifactStore store = new S3ArtifactStore(new InMemoryArtifactCache(tempDir.resolve("cache"), "NODE"), s3Client);
 
         try (var executor = Executors.newFixedThreadPool(2)) {
             var first = executor.submit(() -> store.resolve(componentId, versionA).orElseThrow());

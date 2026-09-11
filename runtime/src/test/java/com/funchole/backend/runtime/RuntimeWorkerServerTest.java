@@ -7,6 +7,8 @@ import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.funchole.backend.artifact.ArtifactStore;
+import com.funchole.backend.artifact.LocalArtifactStore;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;

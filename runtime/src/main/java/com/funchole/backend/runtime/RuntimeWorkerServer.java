@@ -1,6 +1,8 @@
 package com.funchole.backend.runtime;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.funchole.backend.artifact.ArtifactReference;
+import com.funchole.backend.artifact.ArtifactStore;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;

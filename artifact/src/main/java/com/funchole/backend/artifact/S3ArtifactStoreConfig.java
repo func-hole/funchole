@@ -1,4 +1,4 @@
-package com.funchole.backend.runtime;
+package com.funchole.backend.artifact;
 
 import java.net.URI;
 import java.util.Objects;

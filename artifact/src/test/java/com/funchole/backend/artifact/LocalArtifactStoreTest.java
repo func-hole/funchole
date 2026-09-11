@@ -1,4 +1,4 @@
-package com.funchole.backend.runtime;
+package com.funchole.backend.artifact;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;

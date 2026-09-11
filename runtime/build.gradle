@@ -5,9 +5,9 @@ plugins {
 description = 'Standalone runtime worker: accepts execution handoff over a local Unix Domain Socket.'
 
 dependencies {
+    implementation project(':artifact')
+
     implementation 'com.fasterxml.jackson.core:jackson-databind'
-    implementation 'software.amazon.awssdk:s3'
-    implementation "org.apache.commons:commons-compress:${rootProject.ext.commonsCompressVersion}"
     implementation 'org.slf4j:slf4j-simple'
 
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'

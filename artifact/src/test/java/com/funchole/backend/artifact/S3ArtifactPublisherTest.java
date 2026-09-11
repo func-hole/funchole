@@ -1,4 +1,4 @@
-package com.funchole.backend.runtime;
+package com.funchole.backend.artifact;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -75,7 +75,7 @@ class S3ArtifactPublisherTest {
         S3ArtifactPublisher publisher = new S3ArtifactPublisher(s3Client);
         publisher.publish(componentVersionId, writePreparedArtifact(componentVersionId));
         S3ArtifactStore store = new S3ArtifactStore(
-                new FilesystemArtifactCache(tempDir.resolve("cache"), "NODE"),
+                new InMemoryArtifactCache(tempDir.resolve("cache"), "NODE"),
                 s3Client
         );
 

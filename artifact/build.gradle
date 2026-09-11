@@ -1,0 +1,8 @@
+description = 'Storage-neutral artifact contracts: locate/publish artifacts by exact componentVersionId.'
+
+dependencies {
+    implementation 'software.amazon.awssdk:s3'
+    implementation "org.apache.commons:commons-compress:${commonsCompressVersion}"
+
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}

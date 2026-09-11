@@ -1,4 +1,4 @@
-package com.funchole.backend.runtime;
+package com.funchole.backend.artifact;
 
 import java.nio.file.Path;
 import java.util.Optional;
@@ -17,6 +17,11 @@ import java.util.UUID;
  * no fallback scanning. Cache entries always resolve to a locally executable
  * {@link ArtifactReference}, so the Node execution layer never learns
  * whether an artifact came from the cache, local disk, or a remote store.
+ *
+ * This contract lives here (not in the runtime execution module) because
+ * {@link S3ArtifactStore} depends on it directly as part of its cold-resolve
+ * path; the concrete filesystem-backed implementation is a runtime execution
+ * concern and lives in the runtime module instead.
  */
 public interface ArtifactCache {
 

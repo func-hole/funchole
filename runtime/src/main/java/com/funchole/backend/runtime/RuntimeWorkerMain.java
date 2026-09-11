@@ -1,5 +1,10 @@
 package com.funchole.backend.runtime;
 
+import com.funchole.backend.artifact.ArtifactCache;
+import com.funchole.backend.artifact.ArtifactStore;
+import com.funchole.backend.artifact.LocalArtifactStore;
+import com.funchole.backend.artifact.S3ArtifactStore;
+import com.funchole.backend.artifact.S3ArtifactStoreConfig;
 import java.net.URI;
 import java.nio.file.Path;
 import java.util.concurrent.CountDownLatch;
