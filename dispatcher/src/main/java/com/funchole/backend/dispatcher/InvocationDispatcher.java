@@ -47,6 +47,7 @@ public final class InvocationDispatcher {
      * requiring a Runtime Registry reservation for these steps.
      */
     private static final String ORCHESTRATION_RUNTIME_INSTANCE_ID = "dispatcher-orchestration";
+    private static final String RUNTIME_EXECUTION_FAILED_ERROR_CODE = "RUNTIME_EXECUTION_FAILED";
 
     private final Connection connection;
     private final InvocationRegistry invocationRegistry;
@@ -245,16 +246,35 @@ public final class InvocationDispatcher {
     ) {
         handle.completion().whenCompleteAsync((result, failure) -> {
             if (failure != null) {
+                // The handle was ACCEPTED and then the transport/worker died
+                // (IPC close, process exit). Without a terminal message the
+                // step would stay RUNNING and the reserved slot leaked, so
+                // synthesize the smallest infrastructure ERROR payload and
+                // run it through the same terminal pipeline.
                 logger.warn(
                         "Runtime completion failed before terminal message: executionId={}, runtimeInstanceId={}, message={}",
                         stepExecution.id(),
                         runtimeTarget.runtimeInstanceId(),
                         failure.getMessage()
                 );
+                handleTerminalResult(
+                        RuntimeExecutionResult.failure(
+                                stepExecution.id(),
+                                new RuntimeExecutionError(
+                                        RUNTIME_EXECUTION_FAILED_ERROR_CODE, describeFailure(failure))),
+                        runtimeTarget);
                 return;
             }
             handleTerminalResult(result, runtimeTarget);
         }, completionExecutor);
+    }
+
+    private String describeFailure(Throwable failure) {
+        String message = failure.getMessage();
+        if (message != null && !message.isBlank()) {
+            return message;
+        }
+        return failure.getClass().getSimpleName();
     }
 
     private void handleTerminalResult(RuntimeExecutionResult result, RuntimeTarget runtimeTarget) {

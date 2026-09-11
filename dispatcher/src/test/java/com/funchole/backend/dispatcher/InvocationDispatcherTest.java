@@ -665,6 +665,71 @@ class InvocationDispatcherTest {
     }
 
     @Test
+    void exceptionalCompletionFailsStepInvocationAndReleasesCapacity() throws Exception {
+        UUID flowId = UUID.fromString("10000000-0000-0000-0000-000000000271");
+        UUID flowVersionId = UUID.fromString("20000000-0000-0000-0000-000000000271");
+        insertFlow(flowId, "flw_orders_list", flowVersionId, 1);
+        insertStep(flowVersionId, "validate-orders-request", "FUNCTION", 1,
+                UUID.fromString("30000000-0000-0000-0000-000000000271"),
+                UUID.fromString("40000000-0000-0000-0000-000000000271"));
+        Invocation invocation = invocationRegistry.create(new CreateInvocationRequest(
+                flowId, "flw_orders_list", flowVersionId, "{\"path\":\"/orders\"}"
+        ));
+        InMemoryRuntimeRegistry singleCapacityRegistry = new InMemoryRuntimeRegistry();
+        singleCapacityRegistry.register(new RuntimeInstance(
+                "runtime-node-single", "NODE", RuntimeInstanceStatus.AVAILABLE, 1, 0, "/tmp/test-single-p3.sock"));
+        InvocationDispatcher dispatcher = new InvocationDispatcher(
+                natsConnection, invocationRegistry, stepExecutionRegistry, singleCapacityRegistry,
+                new ExecutionPlanner(), new ExceptionalCompletionGateway()
+        );
+
+        assertTrue(dispatcher.processNext(Duration.ofSeconds(5)));
+
+        awaitCondition(() -> singleCapacityRegistry.find("runtime-node-single").orElseThrow().inFlight() == 0,
+                Duration.ofSeconds(5));
+        assertEquals(1, countStepExecutions());
+        InvocationStepExecution failed = firstStepExecution().orElseThrow();
+        assertEquals(InvocationStepExecutionStatus.FAILED, failed.status());
+        assertTrue(failed.error() != null && failed.error().contains("RUNTIME_EXECUTION_FAILED"));
+        assertEquals(InvocationStatus.FAILED,
+                invocationRegistry.findById(invocation.invocationId()).orElseThrow().status());
+    }
+
+    @Test
+    void duplicateFailureAfterExceptionalCompletionDoesNotReleaseCapacityTwice() throws Exception {
+        UUID flowId = UUID.fromString("10000000-0000-0000-0000-000000000281");
+        UUID flowVersionId = UUID.fromString("20000000-0000-0000-0000-000000000281");
+        insertFlow(flowId, "flw_orders_list", flowVersionId, 1);
+        insertStep(flowVersionId, "validate-orders-request", "FUNCTION", 1,
+                UUID.fromString("30000000-0000-0000-0000-000000000281"),
+                UUID.fromString("40000000-0000-0000-0000-000000000281"));
+        invocationRegistry.create(new CreateInvocationRequest(
+                flowId, "flw_orders_list", flowVersionId, "{\"path\":\"/orders\"}"
+        ));
+        InMemoryRuntimeRegistry singleCapacityRegistry = new InMemoryRuntimeRegistry();
+        singleCapacityRegistry.register(new RuntimeInstance(
+                "runtime-node-single", "NODE", RuntimeInstanceStatus.AVAILABLE, 1, 0, "/tmp/test-single-p4.sock"));
+        InvocationDispatcher dispatcher = new InvocationDispatcher(
+                natsConnection, invocationRegistry, stepExecutionRegistry, singleCapacityRegistry,
+                new ExecutionPlanner(), new ExceptionalCompletionGateway()
+        );
+
+        assertTrue(dispatcher.processNext(Duration.ofSeconds(5)));
+        awaitCondition(() -> singleCapacityRegistry.find("runtime-node-single").orElseThrow().inFlight() == 0,
+                Duration.ofSeconds(5));
+
+        InvocationStepExecution failed = firstStepExecution().orElseThrow();
+        InvocationStepExecutionTransition duplicate = stepExecutionRegistry.markFailed(
+                failed.id(),
+                RuntimeExecutionResult.failure(failed.id(),
+                        new RuntimeExecutionError("RUNTIME_EXECUTION_FAILED", "Simulated IPC failure after acceptance")));
+
+        assertFalse(duplicate.transitioned());
+        assertEquals(0, singleCapacityRegistry.find("runtime-node-single").orElseThrow().inFlight());
+        assertEquals(1, countStepExecutions());
+    }
+
+    @Test
     void duplicateStepOneCompletionDoesNotCreateMoreExecutions() throws Exception {
         UUID flowId = UUID.fromString("10000000-0000-0000-0000-000000000261");
         UUID flowVersionId = UUID.fromString("20000000-0000-0000-0000-000000000261");
@@ -1313,6 +1378,22 @@ class InvocationDispatcherTest {
 
         java.util.List<RuntimeExecutionRequest> requests() {
             return requests;
+        }
+    }
+
+    /**
+     * Fake gateway that accepts the handoff and then fails the completion
+     * future exceptionally - the IPC/worker-died-after-ACCEPTED case.
+     */
+    private static final class ExceptionalCompletionGateway implements RuntimeExecutionGateway {
+
+        @Override
+        public RuntimeExecutionHandle handoff(RuntimeTarget target, RuntimeExecutionRequest request) {
+            return new RuntimeExecutionHandle(
+                    RuntimeExecutionAcceptance.accept(request.executionId()),
+                    java.util.concurrent.CompletableFuture.failedFuture(
+                            new IllegalStateException("Simulated IPC failure after acceptance"))
+            );
         }
     }
 
