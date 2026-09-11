@@ -15,6 +15,7 @@ import io.nats.client.Connection;
 import io.nats.client.Nats;
 import java.time.Duration;
 import javax.sql.DataSource;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -48,12 +49,18 @@ public final class GatewayMain {
         );
         GatewayInvocationCompletionListener completionListener =
                 new GatewayInvocationCompletionListener(natsConnection, pendingResponseRegistry);
+        ExecutorService invocationExecutor = Executors.newFixedThreadPool(4, runnable -> {
+            Thread thread = new Thread(runnable, "gateway-invocation-io");
+            thread.setDaemon(true);
+            return thread;
+        });
         GatewayHttpHandler gatewayHttpHandler = new GatewayHttpHandler(
                 objectMapper,
                 gatewayRegistry,
                 flowResolver,
                 invocationRegistry,
-                pendingResponseRegistry
+                pendingResponseRegistry,
+                invocationExecutor
         );
         GatewayServer gatewayServer = new GatewayServer(port, gatewayRegistry, gatewayHttpHandler);
         ScheduledExecutorService registryRefreshExecutor = createRegistryRefreshExecutor();
@@ -62,6 +69,7 @@ public final class GatewayMain {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             gatewayServer.close();
             completionListener.close();
+            gatewayHttpHandler.close();
             registryRefreshExecutor.shutdownNow();
             invocationTimeoutExecutor.shutdownNow();
             if (dataSource instanceof HikariDataSource hikariDataSource) {

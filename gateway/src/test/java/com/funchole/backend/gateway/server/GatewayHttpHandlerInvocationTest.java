@@ -31,6 +31,7 @@ import java.time.OffsetDateTime;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.function.BooleanSupplier;
@@ -46,12 +47,31 @@ class GatewayHttpHandlerInvocationTest {
     private static final UUID INVOCATION_ID = UUID.fromString("77777777-7777-7777-7777-777777777777");
 
     private ScheduledExecutorService timeoutExecutor;
+    private ExecutorService invocationExecutor;
 
     @AfterEach
     void tearDown() {
         if (timeoutExecutor != null) {
             timeoutExecutor.shutdownNow();
         }
+        if (invocationExecutor != null) {
+            invocationExecutor.shutdownNow();
+        }
+    }
+
+    private ExecutorService gatewayInvocationExecutor() {
+        return newDirectExecutor();
+    }
+
+    private static ExecutorService newDirectExecutor() {
+        return new java.util.concurrent.AbstractExecutorService() {
+            public void execute(Runnable command) { command.run(); }
+            public void shutdown() { }
+            public java.util.List<Runnable> shutdownNow() { return java.util.List.of(); }
+            public boolean isShutdown() { return true; }
+            public boolean isTerminated() { return true; }
+            public boolean awaitTermination(long timeout, java.util.concurrent.TimeUnit unit) { return true; }
+        };
     }
 
     @Test
@@ -62,6 +82,7 @@ class GatewayHttpHandlerInvocationTest {
         EmbeddedChannel channel = channel(flowResolver, invocationRegistry, pendingRegistry);
 
         channel.writeInbound(checkoutRequest());
+        channel.runPendingTasks();
 
         assertNull(channel.readOutbound());
         assertEquals(1, flowResolver.calls);
@@ -79,6 +100,7 @@ class GatewayHttpHandlerInvocationTest {
         PendingInvocationResponseRegistry pendingRegistry = pendingRegistry(Duration.ofSeconds(10));
         EmbeddedChannel channel = channel(flowResolver(), invocationRegistry, pendingRegistry);
         channel.writeInbound(checkoutRequest());
+        channel.runPendingTasks();
 
         invocationRegistry.completeWith("{\"status\":201,\"body\":{\"ok\":true}}");
         pendingRegistry.complete(INVOCATION_ID);
@@ -96,6 +118,7 @@ class GatewayHttpHandlerInvocationTest {
         PendingInvocationResponseRegistry pendingRegistry = pendingRegistry(Duration.ofSeconds(10));
         EmbeddedChannel channel = channel(flowResolver(), invocationRegistry, pendingRegistry);
         channel.writeInbound(checkoutRequest());
+        channel.runPendingTasks();
 
         invocationRegistry.failWith();
         pendingRegistry.complete(INVOCATION_ID);
@@ -111,6 +134,7 @@ class GatewayHttpHandlerInvocationTest {
         PendingInvocationResponseRegistry pendingRegistry = pendingRegistry(Duration.ofMillis(50));
         EmbeddedChannel channel = channel(flowResolver(), invocationRegistry, pendingRegistry);
         channel.writeInbound(checkoutRequest());
+        channel.runPendingTasks();
 
         awaitCondition(() -> pendingRegistry.pendingCount() == 0, Duration.ofSeconds(2));
         channel.runPendingTasks();
@@ -125,6 +149,7 @@ class GatewayHttpHandlerInvocationTest {
         PendingInvocationResponseRegistry pendingRegistry = pendingRegistry(Duration.ofSeconds(10));
         EmbeddedChannel channel = channel(flowResolver(), invocationRegistry, pendingRegistry);
         channel.writeInbound(checkoutRequest());
+        channel.runPendingTasks();
         invocationRegistry.completeWith("{\"status\":200,\"body\":{\"ok\":true}}");
 
         pendingRegistry.complete(INVOCATION_ID);
@@ -149,6 +174,7 @@ class GatewayHttpHandlerInvocationTest {
 
         channel.writeInbound(checkoutRequest());
         channel.runPendingTasks();
+        channel.runPendingTasks();
 
         FullHttpResponse response = channel.readOutbound();
         assertEquals(HttpResponseStatus.OK, response.status());
@@ -166,6 +192,7 @@ class GatewayHttpHandlerInvocationTest {
 
         channel.writeInbound(checkoutRequest());
         channel.runPendingTasks();
+        channel.runPendingTasks();
         FullHttpResponse first = channel.readOutbound();
         // Duplicate terminal delivery (event + reconcile): must be a no-op.
         pendingRegistry.complete(INVOCATION_ID);
@@ -174,6 +201,63 @@ class GatewayHttpHandlerInvocationTest {
 
         assertEquals(HttpResponseStatus.OK, first.status());
         assertNull(second);
+    }
+
+
+    @Test
+    void invocationCreationRunsOnTheDedicatedExecutorNotTheNettyEventLoopThread() throws Exception {
+        CapturingInvocationRegistry invocationRegistry = new CapturingInvocationRegistry();
+        PendingInvocationResponseRegistry pendingRegistry = pendingRegistry(Duration.ofSeconds(10));
+        invocationExecutor = Executors.newSingleThreadExecutor(runnable ->
+                new Thread(runnable, "gateway-invocation-test"));
+        EmbeddedChannel channel = channel(flowResolver(), invocationRegistry, pendingRegistry, invocationExecutor);
+
+        channel.writeInbound(checkoutRequest());
+        channel.runPendingTasks();
+        awaitChannelCondition(channel, () -> invocationRegistry.createdOnThread != null, Duration.ofSeconds(5));
+        awaitChannelCondition(channel, () -> pendingRegistry.pendingCount() == 1, Duration.ofSeconds(5));
+
+        assertTrue(invocationRegistry.createdOnThread.startsWith("gateway-invocation-test"));
+        assertNull(channel.readOutbound());
+    }
+
+    @Test
+    void lostWakeupReconciliationRunsOnTheDedicatedExecutorNotTheNettyEventLoopThread() throws Exception {
+        CapturingInvocationRegistry invocationRegistry = new CapturingInvocationRegistry();
+        PendingInvocationResponseRegistry pendingRegistry = pendingRegistry(Duration.ofSeconds(10));
+        invocationExecutor = Executors.newSingleThreadExecutor(runnable ->
+                new Thread(runnable, "gateway-invocation-test"));
+        EmbeddedChannel channel = channel(flowResolver(), invocationRegistry, pendingRegistry, invocationExecutor);
+
+        channel.writeInbound(checkoutRequest());
+        channel.runPendingTasks();
+        awaitChannelCondition(channel, () -> invocationRegistry.reconcileFindOnThread != null, Duration.ofSeconds(5));
+
+        assertTrue(invocationRegistry.createdOnThread.startsWith("gateway-invocation-test"));
+        assertTrue(invocationRegistry.reconcileFindOnThread.startsWith("gateway-invocation-test"));
+    }
+
+    @Test
+    void terminalInvocationLookupRunsOnTheDedicatedExecutorAndResponseStillWritten() throws Exception {
+        CapturingInvocationRegistry invocationRegistry = new CapturingInvocationRegistry();
+        PendingInvocationResponseRegistry pendingRegistry = pendingRegistry(Duration.ofSeconds(10));
+        invocationExecutor = Executors.newSingleThreadExecutor(runnable ->
+                new Thread(runnable, "gateway-invocation-test"));
+        EmbeddedChannel channel = channel(flowResolver(), invocationRegistry, pendingRegistry, invocationExecutor);
+
+        channel.writeInbound(checkoutRequest());
+        channel.runPendingTasks();
+        awaitChannelCondition(channel, () -> pendingRegistry.pendingCount() == 1, Duration.ofSeconds(5));
+
+        invocationRegistry.completeWith("{\"status\":201,\"body\":{\"ok\":true}}");
+        pendingRegistry.complete(INVOCATION_ID);
+        awaitChannelCondition(channel, () -> invocationRegistry.terminalFindOnThread != null, Duration.ofSeconds(5));
+
+        FullHttpResponse response = channel.readOutbound();
+        assertEquals(HttpResponseStatus.CREATED, response.status());
+        JsonNode body = OBJECT_MAPPER.readTree(response.content().toString(StandardCharsets.UTF_8));
+        assertTrue(body.at("/ok").asBoolean());
+        assertTrue(invocationRegistry.terminalFindOnThread.startsWith("gateway-invocation-test"));
     }
 
     private CountingFlowResolver flowResolver() {
@@ -185,12 +269,21 @@ class GatewayHttpHandlerInvocationTest {
             InvocationRegistry invocationRegistry,
             PendingInvocationResponseRegistry pendingRegistry
     ) {
+        return channel(flowResolver, invocationRegistry, pendingRegistry, gatewayInvocationExecutor());
+    }
+
+    private EmbeddedChannel channel(
+            FlowResolver flowResolver,
+            InvocationRegistry invocationRegistry,
+            PendingInvocationResponseRegistry pendingRegistry,
+            ExecutorService invocationExecutor
+    ) {
         GatewayRuntimeEntry gateway = new GatewayRuntimeEntry(
                 GATEWAY_ID, "Primary Gateway", "a6n1y8", "funchole.test", "a6n1y8.funchole.test", null, null);
         GatewayRegistry registry = new GatewayRegistry(new GatewayRegistrySnapshot(
                 Map.of(gateway.hostname(), gateway), null, Map.of()));
         GatewayHttpHandler handler =
-                new GatewayHttpHandler(OBJECT_MAPPER, registry, flowResolver, invocationRegistry, pendingRegistry);
+                new GatewayHttpHandler(OBJECT_MAPPER, registry, flowResolver, invocationRegistry, pendingRegistry, invocationExecutor);
         return new EmbeddedChannel(handler);
     }
 
@@ -208,6 +301,25 @@ class GatewayHttpHandlerInvocationTest {
     private PendingInvocationResponseRegistry pendingRegistry(Duration timeout) {
         timeoutExecutor = Executors.newSingleThreadScheduledExecutor();
         return new PendingInvocationResponseRegistry(timeoutExecutor, timeout);
+    }
+
+    private void awaitChannelCondition(
+            EmbeddedChannel channel,
+            BooleanSupplier condition,
+            Duration timeout
+    ) throws InterruptedException {
+        long deadlineMillis = System.currentTimeMillis() + timeout.toMillis();
+        while (System.currentTimeMillis() < deadlineMillis) {
+            channel.runPendingTasks();
+            if (condition.getAsBoolean()) {
+                return;
+            }
+            Thread.sleep(10);
+        }
+        channel.runPendingTasks();
+        if (!condition.getAsBoolean()) {
+            throw new AssertionError("Condition not met within " + timeout);
+        }
     }
 
     private void awaitCondition(BooleanSupplier condition, Duration timeout) throws InterruptedException {
@@ -243,9 +355,14 @@ class GatewayHttpHandlerInvocationTest {
         private volatile String resultOnFirstFind;
         private boolean findSeen;
 
+        volatile String createdOnThread;
+        volatile String reconcileFindOnThread;
+        volatile String terminalFindOnThread;
+
         @Override
         public Invocation create(CreateInvocationRequest request) {
             this.request = request;
+            createdOnThread = Thread.currentThread().getName();
             return currentInvocation();
         }
 
@@ -289,8 +406,13 @@ class GatewayHttpHandlerInvocationTest {
             }
             boolean firstFind = !findSeen;
             findSeen = true;
-            if (firstFind && resultOnFirstFind != null) {
-                result = resultOnFirstFind;
+            if (firstFind) {
+                if (resultOnFirstFind != null) {
+                    result = resultOnFirstFind;
+                }
+                reconcileFindOnThread = Thread.currentThread().getName();
+            } else {
+                terminalFindOnThread = Thread.currentThread().getName();
             }
             return Optional.of(currentInvocation());
         }

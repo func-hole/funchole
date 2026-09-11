@@ -26,6 +26,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -38,19 +40,22 @@ public final class GatewayHttpHandler extends SimpleChannelInboundHandler<FullHt
     private final FlowResolver flowResolver;
     private final InvocationRegistry invocationRegistry;
     private final PendingInvocationResponseRegistry pendingResponseRegistry;
+    private final ExecutorService invocationExecutor;
 
     public GatewayHttpHandler(
             ObjectMapper objectMapper,
             GatewayRegistry gatewayRegistry,
             FlowResolver flowResolver,
             InvocationRegistry invocationRegistry,
-            PendingInvocationResponseRegistry pendingResponseRegistry
+            PendingInvocationResponseRegistry pendingResponseRegistry,
+            ExecutorService invocationExecutor
     ) {
         this.objectMapper = objectMapper;
         this.gatewayRegistry = gatewayRegistry;
         this.flowResolver = flowResolver;
         this.invocationRegistry = invocationRegistry;
         this.pendingResponseRegistry = pendingResponseRegistry;
+        this.invocationExecutor = invocationExecutor;
     }
 
     @Override
@@ -118,32 +123,97 @@ public final class GatewayHttpHandler extends SimpleChannelInboundHandler<FullHt
         }
 
         FlowResolution flow = resolution.get();
-        Invocation invocation = invocationRegistry.create(new CreateInvocationRequest(
-                flow.flowId(),
-                flow.flowKey(),
-                flow.flowVersionId(),
-                buildInvocationInput(request, requestContext)
-        ));
-
+        // FullHttpRequest buffers must only be touched on the event loop:
+        // extract the request payload here, then offload the blocking
+        // Invocation Registry work to the dedicated executor.
+        String inputPayload = buildInvocationInput(request, requestContext);
         logger.info(
-                "Gateway invocation created: invocationId={}, flowKey={}, flowVersionId={}, host={}, method={}, path={}",
-                invocation.invocationId(),
-                invocation.flowKey(),
-                invocation.flowVersionId(),
-                requestContext.hostname(),
-                requestContext.method(),
+                "Gateway method resolved: flowKey={}, delegating invocation creation to executor, path={}",
+                flow.flowKey(),
                 requestContext.path()
         );
+        createInvocationOnExecutor(context, requestContext, flow, inputPayload);
+    }
 
-        UUID invocationId = invocation.invocationId();
-        context.channel().closeFuture().addListener(future -> pendingResponseRegistry.cancel(invocationId));
-        pendingResponseRegistry.register(invocationId, outcome -> {
-            switch (outcome) {
-                case COMPLETED -> completeInvocationResponse(context, invocationId);
-                case TIMED_OUT -> writeTimeoutResponse(context, invocationId);
+    /**
+     * Runs the blocking Invocation Registry work on the dedicated recursive
+     * executor, never on the Netty event-loop thread. Netty channel state
+     * (close-future listeners, pending-response registration, HTTP writes)
+     * is touched only on the channel's own event loop.
+     */
+    private void createInvocationOnExecutor(
+            ChannelHandlerContext context,
+            GatewayRequestContext requestContext,
+            FlowResolution flow,
+            String inputPayload
+    ) {
+        invocationExecutor.execute(() -> {
+            Invocation invocation;
+            try {
+                invocation = invocationRegistry.create(new CreateInvocationRequest(
+                        flow.flowId(),
+                        flow.flowKey(),
+                        flow.flowVersionId(),
+                        inputPayload
+                ));
+            } catch (RuntimeException failure) {
+                logger.warn(
+                        "Gateway invocation creation failed: host={}, path={}, message={}",
+                        requestContext.hostname(),
+                        requestContext.path(),
+                        failure.getMessage()
+                );
+                runOnEventLoop(context, () -> writeText(
+                        context,
+                        HttpResponseStatus.INTERNAL_SERVER_ERROR,
+                        "Gateway failed to create invocation: " + failure.getMessage()));
+                return;
             }
+
+            logger.info(
+                    "Gateway invocation created: invocationId={}, flowKey={}, flowVersionId={}, host={}, method={}, path={}",
+                    invocation.invocationId(),
+                    invocation.flowKey(),
+                    invocation.flowVersionId(),
+                    requestContext.hostname(),
+                    requestContext.method(),
+                    requestContext.path()
+            );
+
+            registerPendingResponseOnEventLoop(
+                    context,
+                    invocation.invocationId(),
+                    // Lost-wakeup reconciliation performs its own blocking
+                    // durable read; it is chained AFTER the pending-response
+                    // registration completes on the event loop, and runs on
+                    // the executor thread - never the event loop.
+                    () -> invocationExecutor.execute(() ->
+                            reconcileWithDurableState(context, invocation.invocationId())));
         });
-        reconcileWithDurableState(context, invocationId);
+    }
+
+    /**
+     * Registers the pending HTTP correlation and the client-disconnect
+     * cleanup listener on the channel event loop. {@code onRegistered} runs
+     * on the event loop right after registration succeeds, so callers can
+     * chain work that must strictly follow registration (they are then
+     * responsible for offloading blocking work back off the event loop).
+     */
+    private void registerPendingResponseOnEventLoop(
+            ChannelHandlerContext context,
+            UUID invocationId,
+            Runnable onRegistered
+    ) {
+        runOnEventLoop(context, () -> {
+            context.channel().closeFuture().addListener(future -> pendingResponseRegistry.cancel(invocationId));
+            pendingResponseRegistry.register(invocationId, outcome -> {
+                switch (outcome) {
+                    case COMPLETED -> completeInvocationResponse(context, invocationId);
+                    case TIMED_OUT -> writeTimeoutResponse(context, invocationId);
+                }
+            });
+            onRegistered.run();
+        });
     }
 
     /**
@@ -175,25 +245,61 @@ public final class GatewayHttpHandler extends SimpleChannelInboundHandler<FullHt
     }
 
     /**
-     * Runs on whatever thread resolved the pending entry (the NATS listener
-     * thread for a real completion, this handler's own timeout executor for
-     * a timeout) - so the actual write is always dispatched onto the
-     * channel's own event loop rather than touching Netty state directly
-     * from a foreign thread.
+     * Terminal-response handling: the blocking durable Invocation lookup runs
+     * on the executor; only the HTTP write touches the channel event loop.
+     * Runs on whatever thread resolved the pending entry (NATS listener
+     * thread or the timeout executor), so everything here is thread-safe.
      */
     private void completeInvocationResponse(ChannelHandlerContext context, UUID invocationId) {
-        context.channel().eventLoop().execute(() -> {
-            Optional<Invocation> invocation = invocationRegistry.findById(invocationId);
-            if (invocation.isEmpty()) {
-                writeJson(context, HttpResponseStatus.INTERNAL_SERVER_ERROR, Map.of(
-                        "success", false,
-                        "message", "Invocation not found after completion",
-                        "invocationId", invocationId.toString()
-                ));
+        invocationExecutor.execute(() -> {
+            Optional<Invocation> invocation;
+            try {
+                invocation = invocationRegistry.findById(invocationId);
+            } catch (RuntimeException failure) {
+                logger.warn(
+                        "Gateway failed to read terminal Invocation: invocationId={}, message={}",
+                        invocationId,
+                        failure.getMessage()
+                );
+                runOnEventLoop(context, () -> writeText(
+                        context,
+                        HttpResponseStatus.INTERNAL_SERVER_ERROR,
+                        "Gateway failed to read invocation completion: " + failure.getMessage()));
                 return;
             }
-            writeInvocationOutcome(context, invocation.get());
+            runOnEventLoop(context, () -> {
+                if (invocation.isEmpty()) {
+                    writeJson(context, HttpResponseStatus.INTERNAL_SERVER_ERROR, Map.of(
+                            "success", false,
+                            "message", "Invocation not found after completion",
+                            "invocationId", invocationId.toString()
+                    ));
+                    return;
+                }
+                writeInvocationOutcome(context, invocation.get());
+            });
         });
+    }
+
+    private void runOnEventLoop(ChannelHandlerContext context, Runnable action) {
+        context.channel().eventLoop().execute(action);
+    }
+
+    /**
+     * Shuts down the dedicated Invocation executor with the Gateway
+     * lifecycle. Blocks briefly so in-flight blocking registry work can
+     * finish before the process exits.
+     */
+    public void close() {
+        invocationExecutor.shutdown();
+        try {
+            if (!invocationExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                invocationExecutor.shutdownNow();
+            }
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            invocationExecutor.shutdownNow();
+        }
     }
 
     private void writeTimeoutResponse(ChannelHandlerContext context, UUID invocationId) {
