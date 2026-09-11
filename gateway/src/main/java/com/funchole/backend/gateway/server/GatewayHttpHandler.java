@@ -143,6 +143,35 @@ public final class GatewayHttpHandler extends SimpleChannelInboundHandler<FullHt
                 case TIMED_OUT -> writeTimeoutResponse(context, invocationId);
             }
         });
+        reconcileWithDurableState(context, invocationId);
+    }
+
+    /**
+     * Closes the lost-wakeup race: the Invocation Registry publishes
+     * INVOCATION_READY (and its terminal event is published after the durable
+     * terminal persistence) during {@code InvocationRegistry.create()}, which
+     * happens BEFORE this method registers the pending HTTP correlation. A
+     * very fast pipeline can therefore deliver (and effectively drop) the
+     * terminal event before registration, leaving the client waiting until
+     * timeout.
+     *
+     * Once the pending entry exists, a single durable re-read recovers the
+     * completion: if the Invocation is already terminal, complete through the
+     * registry. A terminal event that arrives after registration resolves the
+     * entry first and wins normally; if it arrived before, this reconcile
+     * catches it. The registry removes the entry exactly once, so duplicate
+     * terminal delivery (event + reconcile) can never write the HTTP response
+     * twice.
+     */
+    private void reconcileWithDurableState(ChannelHandlerContext context, UUID invocationId) {
+        Optional<Invocation> reconciled = invocationRegistry.findById(invocationId);
+        if (reconciled.isEmpty()) {
+            return;
+        }
+        InvocationStatus status = reconciled.get().status();
+        if (status == InvocationStatus.COMPLETED || status == InvocationStatus.FAILED) {
+            pendingResponseRegistry.complete(invocationId);
+        }
     }
 
     /**

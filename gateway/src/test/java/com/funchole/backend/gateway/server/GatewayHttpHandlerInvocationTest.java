@@ -138,6 +138,44 @@ class GatewayHttpHandlerInvocationTest {
         assertNull(second);
     }
 
+    @Test
+    void alreadyTerminalInvocationCompletesImmediatelyWithoutWaitingForTerminalEvent() throws Exception {
+        CapturingInvocationRegistry invocationRegistry = new CapturingInvocationRegistry();
+        PendingInvocationResponseRegistry pendingRegistry = pendingRegistry(Duration.ofSeconds(10));
+        EmbeddedChannel channel = channel(flowResolver(), invocationRegistry, pendingRegistry);
+        // The whole pipeline completed during the registration window - the
+        // terminal NATS event was dropped before the pending entry existed.
+        invocationRegistry.completeOnFirstFindWith("{\"status\":200,\"body\":{\"ok\":true}}");
+
+        channel.writeInbound(checkoutRequest());
+        channel.runPendingTasks();
+
+        FullHttpResponse response = channel.readOutbound();
+        assertEquals(HttpResponseStatus.OK, response.status());
+        JsonNode body = OBJECT_MAPPER.readTree(response.content().toString(StandardCharsets.UTF_8));
+        assertTrue(body.at("/ok").asBoolean());
+        assertEquals(0, pendingRegistry.pendingCount());
+    }
+
+    @Test
+    void reconciliationWritesOnlyOnceWhenALateTerminalEventAlsoArrives() throws Exception {
+        CapturingInvocationRegistry invocationRegistry = new CapturingInvocationRegistry();
+        PendingInvocationResponseRegistry pendingRegistry = pendingRegistry(Duration.ofSeconds(10));
+        EmbeddedChannel channel = channel(flowResolver(), invocationRegistry, pendingRegistry);
+        invocationRegistry.completeOnFirstFindWith("{\"status\":200,\"body\":{\"ok\":true}}");
+
+        channel.writeInbound(checkoutRequest());
+        channel.runPendingTasks();
+        FullHttpResponse first = channel.readOutbound();
+        // Duplicate terminal delivery (event + reconcile): must be a no-op.
+        pendingRegistry.complete(INVOCATION_ID);
+        channel.runPendingTasks();
+        FullHttpResponse second = channel.readOutbound();
+
+        assertEquals(HttpResponseStatus.OK, first.status());
+        assertNull(second);
+    }
+
     private CountingFlowResolver flowResolver() {
         return new CountingFlowResolver(new FlowResolution(FLOW_ID, "flw_checkout", FLOW_VERSION_ID));
     }
@@ -202,11 +240,19 @@ class GatewayHttpHandlerInvocationTest {
         private CreateInvocationRequest request;
         private volatile InvocationStatus status = InvocationStatus.PENDING;
         private volatile String result;
+        private volatile String resultOnFirstFind;
+        private boolean findSeen;
 
         @Override
         public Invocation create(CreateInvocationRequest request) {
             this.request = request;
             return currentInvocation();
+        }
+
+        /** Simulates the complete pipeline finishing while the Gateway is registering. */
+        void completeOnFirstFindWith(String result) {
+            this.status = InvocationStatus.COMPLETED;
+            this.resultOnFirstFind = result;
         }
 
         void completeWith(String result) {
@@ -219,6 +265,7 @@ class GatewayHttpHandlerInvocationTest {
         }
 
         private Invocation currentInvocation() {
+            String effectiveResult = result != null || resultOnFirstFind == null ? result : resultOnFirstFind;
             return new Invocation(
                     INVOCATION_ID,
                     request.flowId(),
@@ -227,7 +274,7 @@ class GatewayHttpHandlerInvocationTest {
                     status,
                     request.inputPayload(),
                     "{}",
-                    result,
+                    effectiveResult,
                     null,
                     OffsetDateTime.now(),
                     OffsetDateTime.now(),
@@ -239,6 +286,11 @@ class GatewayHttpHandlerInvocationTest {
         public Optional<Invocation> findById(UUID invocationId) {
             if (request == null || !invocationId.equals(INVOCATION_ID)) {
                 return Optional.empty();
+            }
+            boolean firstFind = !findSeen;
+            findSeen = true;
+            if (firstFind && resultOnFirstFind != null) {
+                result = resultOnFirstFind;
             }
             return Optional.of(currentInvocation());
         }
