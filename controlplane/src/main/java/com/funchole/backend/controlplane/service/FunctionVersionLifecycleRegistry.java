@@ -4,6 +4,7 @@ import com.funchole.backend.controlplane.constant.FunctionVersionStatus;
 import com.funchole.backend.controlplane.entity.FunctionVersion;
 import com.funchole.backend.controlplane.repository.FunctionVersionRepository;
 import com.funchole.backend.core.base.exception.ResourceNotFoundException;
+import java.time.OffsetDateTime;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -25,16 +26,26 @@ public class FunctionVersionLifecycleRegistry {
         this.functionVersionRepository = functionVersionRepository;
     }
 
+    /**
+     * Atomically flips DRAFT -&gt; PUBLISHING via a single conditional UPDATE
+     * (see {@link FunctionVersionRepository#compareAndSetStatus}), so of any
+     * number of concurrent callers racing on the same functionVersionId,
+     * exactly one can ever win this transition. A 0-row result only tells us
+     * "the transition didn't happen"; the follow-up read exists purely to
+     * report an accurate reason (not found vs. wrong status) and plays no
+     * part in the atomicity guarantee itself.
+     */
     @Transactional
     public FunctionVersion beginPublishing(UUID functionVersionId) {
-        FunctionVersion functionVersion = load(functionVersionId);
-        if (functionVersion.getStatus() != FunctionVersionStatus.DRAFT) {
+        int updated = functionVersionRepository.compareAndSetStatus(
+                functionVersionId, FunctionVersionStatus.DRAFT, FunctionVersionStatus.PUBLISHING, OffsetDateTime.now());
+        if (updated == 0) {
+            FunctionVersion existing = load(functionVersionId);
             throw new IllegalStateException(
                     "Function version must be DRAFT to start publishing, current status is "
-                            + functionVersion.getStatus() + ": " + functionVersionId);
+                            + existing.getStatus() + ": " + functionVersionId);
         }
-        functionVersion.markPublishing();
-        return functionVersionRepository.save(functionVersion);
+        return load(functionVersionId);
     }
 
     @Transactional

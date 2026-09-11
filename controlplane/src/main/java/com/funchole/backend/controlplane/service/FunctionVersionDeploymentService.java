@@ -67,7 +67,14 @@ public class FunctionVersionDeploymentService {
 
             return lifecycleRegistry.markReady(functionVersionId);
         } catch (RuntimeException exception) {
-            lifecycleRegistry.markFailed(functionVersionId);
+            try {
+                lifecycleRegistry.markFailed(functionVersionId);
+            } catch (RuntimeException markFailedException) {
+                // The original deployment failure is the one the caller needs to
+                // see; a failure recording that failure is secondary information,
+                // not a replacement for it.
+                exception.addSuppressed(markFailedException);
+            }
             throw exception;
         }
     }

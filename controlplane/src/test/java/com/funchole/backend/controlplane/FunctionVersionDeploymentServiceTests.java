@@ -162,6 +162,26 @@ class FunctionVersionDeploymentServiceTests {
     }
 
     @Test
+    void originalPublishExceptionIsPreservedIfMarkFailedAlsoFails() {
+        FunctionVersion functionVersion = createFunctionVersion();
+        IllegalStateException originalFailure = new IllegalStateException("simulated publish failure");
+        // Moves the version out of PUBLISHING before throwing, so the deployment
+        // service's own markFailed(...) call (which requires PUBLISHING) fails too.
+        RecordingArtifactPublisher publisher = RecordingArtifactPublisher.throwingAfter(
+                () -> lifecycleRegistry.markReady(functionVersion.getId()), originalFailure);
+        FunctionVersionDeploymentService service = service(publisher);
+
+        assertThatThrownBy(() -> service.deployArtifact(functionVersion.getId(), tempDir))
+                .isSameAs(originalFailure)
+                .satisfies(thrown -> {
+                    assertThat(thrown.getSuppressed()).hasSize(1);
+                    assertThat(thrown.getSuppressed()[0])
+                            .isInstanceOf(IllegalStateException.class)
+                            .hasMessageContaining("must be PUBLISHING");
+                });
+    }
+
+    @Test
     void readyVersionCannotDeployAgain() {
         FunctionVersion functionVersion = createFunctionVersion();
         String objectKey = FunctionVersionArtifactRegistry.artifactObjectKey(functionVersion.getId());
@@ -271,25 +291,32 @@ class FunctionVersionDeploymentServiceTests {
         private final PublishedArtifact result;
         private final RuntimeException failure;
         private final Supplier<FunctionVersionStatus> statusCapture;
+        private final Runnable beforeThrow;
         private final List<UUID> invocations = new ArrayList<>();
         private FunctionVersionStatus capturedStatus;
 
-        private RecordingArtifactPublisher(PublishedArtifact result, RuntimeException failure, Supplier<FunctionVersionStatus> statusCapture) {
+        private RecordingArtifactPublisher(
+                PublishedArtifact result, RuntimeException failure, Supplier<FunctionVersionStatus> statusCapture, Runnable beforeThrow) {
             this.result = result;
             this.failure = failure;
             this.statusCapture = statusCapture;
+            this.beforeThrow = beforeThrow;
         }
 
         static RecordingArtifactPublisher returning(PublishedArtifact result) {
-            return new RecordingArtifactPublisher(result, null, null);
+            return new RecordingArtifactPublisher(result, null, null, null);
         }
 
         static RecordingArtifactPublisher throwing(RuntimeException failure) {
-            return new RecordingArtifactPublisher(null, failure, null);
+            return new RecordingArtifactPublisher(null, failure, null, null);
+        }
+
+        static RecordingArtifactPublisher throwingAfter(Runnable beforeThrow, RuntimeException failure) {
+            return new RecordingArtifactPublisher(null, failure, null, beforeThrow);
         }
 
         static RecordingArtifactPublisher capturingStatusAndReturning(Supplier<FunctionVersionStatus> statusCapture, PublishedArtifact result) {
-            return new RecordingArtifactPublisher(result, null, statusCapture);
+            return new RecordingArtifactPublisher(result, null, statusCapture, null);
         }
 
         @Override
@@ -297,6 +324,9 @@ class FunctionVersionDeploymentServiceTests {
             invocations.add(componentVersionId);
             if (statusCapture != null) {
                 capturedStatus = statusCapture.get();
+            }
+            if (beforeThrow != null) {
+                beforeThrow.run();
             }
             if (failure != null) {
                 throw failure;
