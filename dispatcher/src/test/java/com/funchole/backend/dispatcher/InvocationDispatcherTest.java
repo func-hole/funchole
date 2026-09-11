@@ -730,6 +730,39 @@ class InvocationDispatcherTest {
     }
 
     @Test
+    void unsupportedNextStepTypeFailsTheInvocation() throws Exception {
+        UUID flowId = UUID.fromString("10000000-0000-0000-0000-000000000291");
+        UUID flowVersionId = UUID.fromString("20000000-0000-0000-0000-000000000291");
+        insertFlow(flowId, "flw_orders_list", flowVersionId, 1);
+        insertStep(flowVersionId, "validate-orders-request", "FUNCTION", 100,
+                UUID.fromString("30000000-0000-0000-0000-000000000291"),
+                UUID.fromString("40000000-0000-0000-0000-000000000291"));
+        insertStep(flowVersionId, "log-request", "MIDDLEWARE", 101,
+                UUID.fromString("30000000-0000-0000-0000-000000000292"),
+                UUID.fromString("40000000-0000-0000-0000-000000000292"));
+        Invocation invocation = invocationRegistry.create(new CreateInvocationRequest(
+                flowId, "flw_orders_list", flowVersionId, "{\"path\":\"/orders\"}"
+        ));
+        InvocationDispatcher dispatcher = new InvocationDispatcher(
+                natsConnection, invocationRegistry, stepExecutionRegistry, runtimeRegistry,
+                new ExecutionPlanner(), new EagerCompletingGateway()
+        );
+
+        assertTrue(dispatcher.processNext(Duration.ofSeconds(5)));
+
+        awaitCondition(
+                () -> invocationRegistry.findById(invocation.invocationId()).orElseThrow().status()
+                        == InvocationStatus.FAILED,
+                Duration.ofSeconds(5));
+        assertEquals(InvocationStatus.FAILED,
+                invocationRegistry.findById(invocation.invocationId()).orElseThrow().status());
+
+        assertEquals(1, countStepExecutions());
+        InvocationStepExecution first = firstStepExecution().orElseThrow();
+        assertEquals(InvocationStepExecutionStatus.COMPLETED, first.status());
+    }
+
+    @Test
     void duplicateStepOneCompletionDoesNotCreateMoreExecutions() throws Exception {
         UUID flowId = UUID.fromString("10000000-0000-0000-0000-000000000261");
         UUID flowVersionId = UUID.fromString("20000000-0000-0000-0000-000000000261");

@@ -252,6 +252,27 @@ class ExecutionPlannerTest {
     }
 
     @Test
+    void nextStepComponentTypeReturnsEmptyWhenNoFurtherSteps() {
+        InvocationStepSnapshot first = step("validate-orders-request", "FUNCTION", 1,
+                "88888888-8888-8888-8888-888888888861", "99999999-9999-9999-9999-999999999861");
+
+        assertTrue(planner.nextStepComponentType(snapshot(List.of(first)), 1).isEmpty());
+    }
+
+    @Test
+    void nextStepComponentTypeReturnsTypeWhenFurtherStepExists() {
+        InvocationStepSnapshot first = step("validate-orders-request", "FUNCTION", 1,
+                "88888888-8888-8888-8888-888888888861", "99999999-9999-9999-9999-999999999861");
+        InvocationStepSnapshot second = step("log-request", "MIDDLEWARE", 2,
+                "88888888-8888-8888-8888-888888888862", "99999999-9999-9999-9999-999999999862");
+
+        Optional<String> type = planner.nextStepComponentType(snapshot(List.of(first, second)), 1);
+
+        assertTrue(type.isPresent());
+        assertEquals("MIDDLEWARE", type.get());
+    }
+
+    @Test
     void nextStepCarriesExactPinnedComponentAndVersionFromSnapshot() {
         InvocationStepSnapshot first = step("validate-orders-request", "FUNCTION", 1,
                 "88888888-8888-8888-8888-888888888861", "99999999-9999-9999-9999-999999999861");

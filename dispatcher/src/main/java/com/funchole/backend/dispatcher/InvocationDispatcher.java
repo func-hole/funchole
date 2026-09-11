@@ -27,6 +27,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -380,6 +381,13 @@ public final class InvocationDispatcher {
         Optional<DispatchableStep> nextStep =
                 executionPlanner.planNextStep(invocation, snapshot, completedExecution.position());
         if (nextStep.isEmpty()) {
+            Optional<String> nextType =
+                    executionPlanner.nextStepComponentType(snapshot, completedExecution.position());
+            if (nextType.isPresent()) {
+                failInvocationWithUnsupportedComponentType(
+                        completedExecution, invocation, nextType.get());
+                return;
+            }
             logger.info(
                     "Flow progression stopped: no further step after position={} for invocationId={}, flowKey={}",
                     completedExecution.position(),
@@ -504,6 +512,38 @@ public final class InvocationDispatcher {
                     "Failed to persist Invocation failure: invocationId={}, message={}",
                     failedExecution.invocationId(), exception.getMessage()
             );
+        }
+    }
+
+    /**
+     * A next step exists in the immutable snapshot but its component type is
+     * not one this system currently supports. Fail the Invocation rather than
+     * leaving it PENDING indefinitely.
+     */
+    private void failInvocationWithUnsupportedComponentType(
+            InvocationStepExecution completedExecution,
+            Invocation invocation,
+            String unsupportedComponentType) {
+        String errorMessage = "Unsupported component type '" + unsupportedComponentType
+                + "' at position following " + completedExecution.position()
+                + " for invocationId=" + invocation.invocationId()
+                + ", flowKey=" + invocation.flowKey();
+        logger.info("Flow progression failed: {}", errorMessage);
+        try {
+            invocationRegistry.markFailed(invocation.invocationId(), serializeErrorAsJson(errorMessage));
+        } catch (RuntimeException exception) {
+            logger.warn(
+                    "Failed to persist Invocation failure: invocationId={}, message={}",
+                    invocation.invocationId(), exception.getMessage()
+            );
+        }
+    }
+
+    private String serializeErrorAsJson(String errorMessage) {
+        try {
+            return objectMapper.writeValueAsString(Map.of("message", errorMessage));
+        } catch (Exception exception) {
+            return "{\"message\":\"" + errorMessage.replace("\"", "\\\"") + "\"}";
         }
     }
 

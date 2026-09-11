@@ -146,6 +146,35 @@ public class ExecutionPlanner {
         ));
     }
 
+    /**
+     * Returns the component type of the lowest-position step after
+     * {@code completedPosition}, or empty if no further steps exist. The
+     * caller uses this to distinguish "no next step" (legitimate stop) from
+     * "next step exists but is unsupported" (Invocation failure).
+     */
+    public Optional<String> nextStepComponentType(InvocationSnapshot snapshot, int completedPosition) {
+        InvocationFlowSnapshot rootFlow = findRootFlow(snapshot);
+        if (rootFlow == null) {
+            return Optional.empty();
+        }
+        InvocationStepSnapshot next = null;
+        for (InvocationStepSnapshot step : rootFlow.steps() == null ? List.<InvocationStepSnapshot>of() : rootFlow.steps()) {
+            if (step == null || step.position() <= completedPosition) {
+                continue;
+            }
+            if (next == null || step.position() < next.position()) {
+                next = step;
+            }
+        }
+        if (next == null) {
+            return Optional.empty();
+        }
+        String componentType = next.componentType() == null
+                ? ""
+                : next.componentType().trim().toUpperCase(Locale.ROOT);
+        return Optional.of(componentType);
+    }
+
     private InvocationFlowSnapshot findRootFlow(InvocationSnapshot snapshot) {
         if (snapshot.flows() == null) {
             return null;
