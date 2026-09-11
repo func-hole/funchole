@@ -9,6 +9,7 @@ import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.S3Configuration;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
+import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 
 final class AwsS3ArtifactClient implements S3ArtifactClient {
@@ -52,6 +53,22 @@ final class AwsS3ArtifactClient implements S3ArtifactClient {
                 return false;
             }
             throw new IllegalStateException("Failed to download artifact from S3 key " + key, exception);
+        }
+    }
+
+    @Override
+    public void upload(String key, Path source) {
+        try {
+            s3Client.putObject(
+                    PutObjectRequest.builder()
+                            .bucket(bucket)
+                            .key(key)
+                            .contentType("application/gzip")
+                            .build(),
+                    source
+            );
+        } catch (S3Exception exception) {
+            throw new IllegalStateException("Failed to upload artifact to S3 key " + key, exception);
         }
     }
 }

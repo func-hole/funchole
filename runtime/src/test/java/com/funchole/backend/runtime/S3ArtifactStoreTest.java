@@ -283,6 +283,11 @@ class S3ArtifactStoreTest {
             return true;
         }
 
+        @Override
+        public void upload(String key, Path source) {
+            throw new UnsupportedOperationException("S3ArtifactStoreTest only supports downloads");
+        }
+
         private int downloadCount() {
             return downloadCount.get();
         }
