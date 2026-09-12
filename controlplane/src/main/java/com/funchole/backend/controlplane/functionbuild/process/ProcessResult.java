@@ -1,4 +1,4 @@
-package com.funchole.backend.controlplane.functionbuild.runtime.node;
+package com.funchole.backend.controlplane.functionbuild.process;
 
 /**
  * Outcome of one {@link ProcessExecutor#execute} call. {@code exitCode} is
