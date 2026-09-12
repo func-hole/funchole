@@ -5,6 +5,10 @@ spring:
     hibernate:
       ddl-auto: validate
 
+app:
+  source:
+    storage-root: ${java.io.tmpdir}/funchole-source-tests
+
 management:
   endpoints:
     web:
