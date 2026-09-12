@@ -2,6 +2,7 @@ package com.funchole.backend.invocation;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.funchole.backend.invocationcontract.DirectInvocationRequest;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -22,6 +23,14 @@ public final class JdbcInvocationRegistry implements InvocationRegistry {
             id, kind, flow_id, flow_key, flow_version_id, function_id, function_key, function_version_id,
             status, input_payload, dependency_snapshot, result, error, created_at, updated_at, completed_at
             """;
+
+    /**
+     * The single step key written into the dependency snapshot of every
+     * direct FunctionVersion invocation. Purely internal execution-snapshot
+     * detail - never exposed via invocation-contract, and never used to
+     * classify an Invocation (the durable {@code kind} column owns that).
+     */
+    private static final String DIRECT_INVOCATION_STEP_KEY = "invoke-function";
 
     private final DataSource dataSource;
     private final ObjectMapper objectMapper;
@@ -100,7 +109,7 @@ public final class JdbcInvocationRegistry implements InvocationRegistry {
     private InvocationSnapshot directInvocationSnapshot(DirectInvocationRequest request) {
         InvocationStepSnapshot invokeFunctionStep = new InvocationStepSnapshot(
                 UUID.randomUUID(),
-                DirectInvocationRequest.DIRECT_INVOCATION_STEP_KEY,
+                DIRECT_INVOCATION_STEP_KEY,
                 "FUNCTION",
                 1,
                 request.functionId(),

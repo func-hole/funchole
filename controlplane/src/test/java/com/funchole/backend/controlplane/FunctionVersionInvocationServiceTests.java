@@ -20,9 +20,9 @@ import com.funchole.backend.controlplane.service.FunctionVersionInvocationServic
 import com.funchole.backend.controlplane.service.FunctionVersionLifecycleRegistry;
 import com.funchole.backend.controlplane.service.FunctionVersionSourceService;
 import com.funchole.backend.core.base.exception.ResourceNotFoundException;
-import com.funchole.backend.invocation.DirectInvocationRequest;
-import com.funchole.backend.invocation.DirectInvocationResult;
-import com.funchole.backend.invocation.FunctionVersionInvocationHandoff;
+import com.funchole.backend.invocationcontract.DirectInvocationRequest;
+import com.funchole.backend.invocationcontract.DirectInvocationResult;
+import com.funchole.backend.invocationcontract.FunctionVersionInvocationHandoff;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -32,6 +32,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.ApplicationContext;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.annotation.Transactional;
@@ -72,6 +73,12 @@ class FunctionVersionInvocationServiceTests {
 
     @Autowired
     private FunctionVersionLifecycleRegistry lifecycleRegistry;
+
+    @Autowired
+    private ApplicationContext applicationContext;
+
+    @Autowired
+    private FunctionVersionInvocationService realFunctionVersionInvocationService;
 
     @Test
     void readyFunctionVersionCreatesADirectInvocation() {
@@ -243,35 +250,47 @@ class FunctionVersionInvocationServiceTests {
     private ThrowingHandoff throwingHandoff = new ThrowingHandoff();
 
     @Test
-    void serviceHasNoDependencyOnInvocationImplementationOrExecutionClasses() {
+    void serviceOnlyUsesContractBoundaryTypesNeverInvocationImplementationOrExecutionClasses() {
+        // "com.funchole.backend.invocation." (trailing dot) intentionally
+        // excludes "com.funchole.backend.invocationcontract" - the contract
+        // package - which is exactly what this service is allowed to depend
+        // on (InvocationRegistry, JdbcInvocationRegistry, the persisted
+        // Invocation record, and every other invocation-module internal all
+        // live under the forbidden prefix).
         List<String> forbiddenPackagePrefixes = List.of(
+                "com.funchole.backend.invocation.",
                 "com.funchole.backend.dispatcher",
                 "com.funchole.backend.runtimeregistry",
                 "com.funchole.backend.runtime"
         );
-        List<String> forbiddenExactClasses = List.of(
-                "com.funchole.backend.invocation.JdbcInvocationRegistry",
-                "com.funchole.backend.invocation.Invocation",
-                "com.funchole.backend.invocation.InvocationRegistry"
-        );
         for (Field field : FunctionVersionInvocationService.class.getDeclaredFields()) {
-            assertTypeIsAllowed(field.getType(), forbiddenPackagePrefixes, forbiddenExactClasses);
+            assertTypeIsAllowed(field.getType(), forbiddenPackagePrefixes);
         }
         for (Constructor<?> constructor : FunctionVersionInvocationService.class.getDeclaredConstructors()) {
             for (Class<?> parameterType : constructor.getParameterTypes()) {
-                assertTypeIsAllowed(parameterType, forbiddenPackagePrefixes, forbiddenExactClasses);
+                assertTypeIsAllowed(parameterType, forbiddenPackagePrefixes);
             }
         }
         for (Method method : FunctionVersionInvocationService.class.getDeclaredMethods()) {
-            assertTypeIsAllowed(method.getReturnType(), forbiddenPackagePrefixes, forbiddenExactClasses);
+            assertTypeIsAllowed(method.getReturnType(), forbiddenPackagePrefixes);
             for (Class<?> parameterType : method.getParameterTypes()) {
-                assertTypeIsAllowed(parameterType, forbiddenPackagePrefixes, forbiddenExactClasses);
+                assertTypeIsAllowed(parameterType, forbiddenPackagePrefixes);
             }
         }
     }
 
-    private void assertTypeIsAllowed(Class<?> type, List<String> forbiddenPackagePrefixes, List<String> forbiddenExactClasses) {
-        assertThat(forbiddenExactClasses).doesNotContain(type.getName());
+    @Test
+    void springResolvesExactlyOneFunctionVersionInvocationHandoffBean() {
+        assertThat(applicationContext.getBeansOfType(FunctionVersionInvocationHandoff.class)).hasSize(1);
+    }
+
+    @Test
+    void functionVersionInvocationServiceIsConstructedThroughNormalApplicationWiring() {
+        assertThat(applicationContext.getBeansOfType(FunctionVersionInvocationService.class)).hasSize(1);
+        assertThat(realFunctionVersionInvocationService).isNotNull();
+    }
+
+    private void assertTypeIsAllowed(Class<?> type, List<String> forbiddenPackagePrefixes) {
         for (String forbidden : forbiddenPackagePrefixes) {
             assertThat(type.getPackageName().startsWith(forbidden))
                     .as("type %s must not belong to package %s", type.getName(), forbidden)

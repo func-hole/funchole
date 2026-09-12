@@ -6,9 +6,18 @@ description = 'Invocation module placeholder for orchestration concerns.'
 
 dependencies {
     implementation project(':core')
+    // api, not implementation: dispatcher/gateway already have unrestricted
+    // access to this module's internals and directly reference these contract
+    // types too (e.g. in their own InvocationRegistry fakes) - exposing the
+    // contract transitively avoids making them redeclare the same dependency.
+    api project(':invocation-contract')
     implementation 'com.fasterxml.jackson.core:jackson-databind'
     implementation "io.nats:jnats:${natsVersion}"
     implementation 'org.postgresql:postgresql'
+    // Only for @Configuration/@Bean wiring of the FunctionVersionInvocationHandoff
+    // adapter (see InvocationHandoffConfig) - not a full Spring Boot dependency,
+    // and unused by dispatcher/gateway, which never see it transitively.
+    implementation 'org.springframework:spring-context'
 
     testImplementation 'com.fasterxml.jackson.core:jackson-databind'
     testImplementation "org.testcontainers:testcontainers-junit-jupiter:${testcontainersVersion}"

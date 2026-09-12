@@ -8,7 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.funchole.backend.invocation.CreateInvocationRequest;
-import com.funchole.backend.invocation.DirectInvocationRequest;
+import com.funchole.backend.invocationcontract.DirectInvocationRequest;
 import com.funchole.backend.invocation.Invocation;
 import com.funchole.backend.invocation.InvocationMessagingConfig;
 import com.funchole.backend.invocation.InvocationRegistry;

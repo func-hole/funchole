@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.funchole.backend.invocationcontract.DirectInvocationRequest;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -237,7 +238,10 @@ class InvocationInspectionServiceTest {
         UUID flowId = UUID.randomUUID();
         UUID flowVersionId = UUID.randomUUID();
         insertFlow(flowId, "flw_single_step", flowVersionId);
-        insertStep(flowVersionId, DirectInvocationRequest.DIRECT_INVOCATION_STEP_KEY, "FUNCTION", 1,
+        // "invoke-function" mirrors the literal step key JdbcInvocationRegistry
+        // writes internally for a direct invocation's snapshot - now a private
+        // implementation detail, not part of invocation-contract.
+        insertStep(flowVersionId, "invoke-function", "FUNCTION", 1,
                 UUID.randomUUID(), UUID.randomUUID());
         Invocation invocation = registry.create(new CreateInvocationRequest(flowId, "flw_single_step", flowVersionId, "{}"));
 

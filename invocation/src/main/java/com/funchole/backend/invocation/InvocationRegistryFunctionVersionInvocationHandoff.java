@@ -1,5 +1,9 @@
 package com.funchole.backend.invocation;
 
+import com.funchole.backend.invocationcontract.DirectInvocationRequest;
+import com.funchole.backend.invocationcontract.DirectInvocationResult;
+import com.funchole.backend.invocationcontract.FunctionVersionInvocationHandoff;
+
 /**
  * Default {@link FunctionVersionInvocationHandoff}: bridges a fully-resolved
  * direct FunctionVersion execution request straight onto

@@ -13,7 +13,7 @@ import com.funchole.backend.gateway.GatewayRuntimeEntry;
 import com.funchole.backend.gateway.flow.FlowResolution;
 import com.funchole.backend.gateway.flow.FlowResolver;
 import com.funchole.backend.invocation.CreateInvocationRequest;
-import com.funchole.backend.invocation.DirectInvocationRequest;
+import com.funchole.backend.invocationcontract.DirectInvocationRequest;
 import com.funchole.backend.invocation.Invocation;
 import com.funchole.backend.invocation.InvocationKind;
 import com.funchole.backend.invocation.InvocationRegistry;

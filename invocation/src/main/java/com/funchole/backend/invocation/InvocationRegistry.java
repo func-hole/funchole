@@ -1,5 +1,6 @@
 package com.funchole.backend.invocation;
 
+import com.funchole.backend.invocationcontract.DirectInvocationRequest;
 import java.util.Optional;
 import java.util.UUID;
 

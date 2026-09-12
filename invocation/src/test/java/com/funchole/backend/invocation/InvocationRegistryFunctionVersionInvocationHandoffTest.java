@@ -5,6 +5,9 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.funchole.backend.invocationcontract.DirectInvocationRequest;
+import com.funchole.backend.invocationcontract.DirectInvocationResult;
+import com.funchole.backend.invocationcontract.FunctionVersionInvocationHandoff;
 import java.sql.Connection;
 import java.sql.Statement;
 import java.util.ArrayList;

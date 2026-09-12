@@ -1,0 +1,9 @@
+plugins {
+    id 'java-library'
+}
+
+description = 'Transport-neutral cross-module contracts for direct FunctionVersion invocation. No dependency on controlplane, invocation, dispatcher, runtime, Spring Web, or persistence/JDBC.'
+
+dependencies {
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}

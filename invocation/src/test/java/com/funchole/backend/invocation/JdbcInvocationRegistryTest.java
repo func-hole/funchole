@@ -10,6 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.funchole.backend.invocationcontract.DirectInvocationRequest;
 import java.sql.Connection;
 import java.sql.Statement;
 import java.util.ArrayList;

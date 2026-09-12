@@ -8,11 +8,18 @@ dependencies {
     implementation project(':certificate')
     implementation project(':core')
     implementation project(':artifact')
-    // Only the invocation module's small boundary contract is used here
+    // The narrow, transport-neutral cross-module contract only
     // (FunctionVersionInvocationHandoff / DirectInvocationRequest /
-    // DirectInvocationResult) - never JdbcInvocationRegistry, the persisted
-    // Invocation record, the Dispatcher, or the Runtime Registry.
-    implementation project(':invocation')
+    // DirectInvocationResult) - controlplane's own source cannot compile
+    // against JdbcInvocationRegistry, InvocationRegistry, the persisted
+    // Invocation record, the Dispatcher, or the Runtime Registry, because
+    // none of them are even on this module's compile classpath.
+    implementation project(':invocation-contract')
+    // The invocation module's concrete FunctionVersionInvocationHandoff
+    // implementation (see InvocationHandoffConfig) must be present on the
+    // classpath for Spring to find and wire it at startup, but only at
+    // runtime - controlplane's own code never compiles against it.
+    runtimeOnly project(':invocation')
 
     implementation 'org.springframework.boot:spring-boot-starter-actuator'
     implementation 'org.springframework.boot:spring-boot-starter-data-jpa'

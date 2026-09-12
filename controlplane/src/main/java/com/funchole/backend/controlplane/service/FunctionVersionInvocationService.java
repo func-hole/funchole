@@ -4,9 +4,9 @@ import com.funchole.backend.controlplane.constant.FunctionVersionStatus;
 import com.funchole.backend.controlplane.entity.FunctionVersion;
 import com.funchole.backend.controlplane.repository.FunctionVersionRepository;
 import com.funchole.backend.core.base.exception.ResourceNotFoundException;
-import com.funchole.backend.invocation.DirectInvocationRequest;
-import com.funchole.backend.invocation.DirectInvocationResult;
-import com.funchole.backend.invocation.FunctionVersionInvocationHandoff;
+import com.funchole.backend.invocationcontract.DirectInvocationRequest;
+import com.funchole.backend.invocationcontract.DirectInvocationResult;
+import com.funchole.backend.invocationcontract.FunctionVersionInvocationHandoff;
 import java.util.UUID;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -18,7 +18,7 @@ import org.springframework.transaction.annotation.Transactional;
  * caller command (functionVersionId + payload only)
  * -&gt; readiness validation (this class)
  * -&gt; durable FunctionVersion resolution -&gt; pinned request (identity/runtime from durable state)
- * -&gt; exactly-pinned invocation hand-off (the invocation module's own boundary contract)
+ * -&gt; exactly-pinned invocation hand-off (the invocation-contract module's boundary types)
  * -&gt; existing invocation / dispatcher / runtime path
  * </pre>
  *
@@ -37,11 +37,11 @@ import org.springframework.transaction.annotation.Transactional;
  *       Invocation failure semantics (no silently stuck invocations).</li>
  * </ul>
  *
- * <p>This class depends only on {@link FunctionVersionInvocationHandoff} -
- * the invocation module's own small, explicit boundary contract. It never
- * imports {@code InvocationRegistry}, {@code JdbcInvocationRegistry}, the
- * persisted {@code Invocation} record, the Dispatcher, or the Runtime
- * Registry.
+ * <p>This class depends only on the {@code invocation-contract} module's
+ * {@link FunctionVersionInvocationHandoff}. It never imports (and cannot -
+ * they are not even on this module's compile classpath) {@code
+ * InvocationRegistry}, {@code JdbcInvocationRegistry}, the persisted {@code
+ * Invocation} record, the Dispatcher, or the Runtime Registry.
  *
  * <p>No synchronous waiting: callers receive the invocation id and initial
  * status immediately for later inspection.
