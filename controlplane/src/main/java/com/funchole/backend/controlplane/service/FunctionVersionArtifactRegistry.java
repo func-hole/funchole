@@ -56,7 +56,11 @@ public class FunctionVersionArtifactRegistry {
         return "artifacts/" + functionVersionId + "/" + ARTIFACT_FILE_NAME;
     }
 
-    private void validateArtifactReference(
+    /**
+     * Package-visible so {@link FunctionVersionDeploymentFinalizer} can run the
+     * same validation inside its own atomic finalization transaction.
+     */
+    static void validateArtifactReference(
             UUID functionVersionId,
             String artifactObjectKey,
             String artifactFormat,

@@ -29,30 +29,31 @@ import java.util.UUID;
  * building stays entirely behind {@link RuntimeBuilder} (selected via
  * {@link RuntimeBuilderRegistry} from the FunctionVersion's own declared
  * runtime - never hardcoded), packaging/checksum/upload stays in
- * {@link ArtifactPublisher}, artifact metadata persistence and immutability
- * stay in {@link FunctionVersionArtifactRegistry}, and status persistence
- * stays in {@link FunctionVersionLifecycleRegistry}.
+ * {@link ArtifactPublisher}, and the final atomic deployment finalization
+ * (artifact metadata persistence + PUBLISHING -&gt; READY transition) stays in
+ * {@link FunctionVersionDeploymentFinalizer}.
  *
  * <p>{@link BuildWorkspace} and {@link PreparedArtifact} are both
  * {@code AutoCloseable}; nesting them in try-with-resources guarantees both
  * are cleaned up whether the build/publish sequence succeeds or fails.
  *
  * <p>Once {@link ArtifactPublisher#publish} has returned successfully, the
- * remote artifact exists whether or not everything after it succeeds. Any
- * failure past that point (the version-id validation below, metadata
- * persistence, or the READY transition itself) therefore triggers a
- * best-effort {@link ArtifactPublisher#delete} of that same artifact, so a
- * failed deployment does not silently leave an orphaned, untracked object
- * behind when cleanup is possible. A failure in {@code publish} itself is
+ * remote artifact exists whether or not the atomic finalization that follows
+ * it commits. A failed finalization persists nothing locally, so the
+ * published artifact is compensated (deleted, best-effort) with the original
+ * finalization failure preserved as the primary cause and any compensation
+ * failure added as suppressed. A failure in {@code publish} itself is
  * never compensated - there is no {@code PublishedArtifact} to reference,
- * and the existing orphan-on-write-failure gap documented for
- * {@code attachPublishedArtifact} remains an accepted limitation.
- */
+ * and the existing orphan-on-write-failure gap documented for the artifact
+ * registry remains an accepted limitation. A COMMITTED finalization is
+ * terminal: compensation never runs for a successfully finalized READY
+ * deployment. */
 public class FunctionVersionDeploymentService {
 
     private final BuildWorkspaceService buildWorkspaceService;
     private final RuntimeBuilderRegistry runtimeBuilderRegistry;
     private final ArtifactPublisher artifactPublisher;
+    private final FunctionVersionDeploymentFinalizer deploymentFinalizer;
     private final FunctionVersionArtifactRegistry artifactRegistry;
     private final FunctionVersionLifecycleRegistry lifecycleRegistry;
 
@@ -60,12 +61,14 @@ public class FunctionVersionDeploymentService {
             BuildWorkspaceService buildWorkspaceService,
             RuntimeBuilderRegistry runtimeBuilderRegistry,
             ArtifactPublisher artifactPublisher,
+            FunctionVersionDeploymentFinalizer deploymentFinalizer,
             FunctionVersionArtifactRegistry artifactRegistry,
             FunctionVersionLifecycleRegistry lifecycleRegistry
     ) {
         this.buildWorkspaceService = buildWorkspaceService;
         this.runtimeBuilderRegistry = runtimeBuilderRegistry;
         this.artifactPublisher = artifactPublisher;
+        this.deploymentFinalizer = deploymentFinalizer;
         this.artifactRegistry = artifactRegistry;
         this.lifecycleRegistry = lifecycleRegistry;
     }
@@ -73,7 +76,8 @@ public class FunctionVersionDeploymentService {
     public FunctionVersion deploy(UUID functionVersionId) {
         // Checked before the version ever enters PUBLISHING, so an
         // already-published version is rejected without touching status,
-        // build, or publish at all.
+        // build, or publish at all. The finalizer re-checks this inside its
+        // own transaction (artifact immutability is enforced at both ends).
         if (artifactRegistry.findArtifactMetadata(functionVersionId).isPresent()) {
             throw new IllegalStateException(
                     "Function version already has a published artifact and cannot be republished: " + functionVersionId);
@@ -94,24 +98,14 @@ public class FunctionVersionDeploymentService {
 
                 try (PreparedArtifact preparedArtifact = runtimeBuilder.build(workspace)) {
                     published = artifactPublisher.publish(functionVersionId, preparedArtifact.artifactDirectory());
-
-                    if (!functionVersionId.equals(published.componentVersionId())) {
-                        throw new IllegalStateException(
-                                "Published artifact version id " + published.componentVersionId()
-                                        + " does not match requested function version id " + functionVersionId);
-                    }
-
-                    artifactRegistry.attachPublishedArtifact(
-                            functionVersionId,
-                            published.objectKey(),
-                            FunctionVersionArtifactRegistry.ARTIFACT_FORMAT_TAR_GZ,
-                            published.sha256(),
-                            published.sizeBytes()
-                    );
                 }
             }
 
-            return lifecycleRegistry.markReady(functionVersionId);
+            // Atomic local finalization: metadata + PUBLISHING -> READY in one
+            // transaction. Any failure rolls back all local changes; the catch
+            // block below then compensates for the already-published remote
+            // artifact and marks the version FAILED.
+            return deploymentFinalizer.finalizeDeployment(functionVersionId, published);
         } catch (RuntimeException exception) {
             if (published != null) {
                 try {

@@ -20,6 +20,7 @@ import com.funchole.backend.controlplane.repository.AppUserRepository;
 import com.funchole.backend.controlplane.repository.FunctionRepository;
 import com.funchole.backend.controlplane.repository.FunctionVersionRepository;
 import com.funchole.backend.controlplane.service.FunctionVersionArtifactRegistry;
+import com.funchole.backend.controlplane.service.FunctionVersionDeploymentFinalizer;
 import com.funchole.backend.controlplane.service.FunctionVersionDeploymentService;
 import com.funchole.backend.controlplane.service.FunctionVersionLifecycleRegistry;
 import com.funchole.backend.controlplane.service.FunctionVersionSourceService;
@@ -76,6 +77,9 @@ class FunctionVersionDeploymentServiceTests {
 
     @Autowired
     private FunctionVersionArtifactRegistry artifactRegistry;
+
+    @Autowired
+    private FunctionVersionDeploymentFinalizer deploymentFinalizer;
 
     @Autowired
     private FunctionVersionLifecycleRegistry lifecycleRegistry;
@@ -206,6 +210,11 @@ class FunctionVersionDeploymentServiceTests {
 
         assertThat(publisher.deletionCount()).isEqualTo(1);
         assertThat(publisher.lastDeletedObjectKey()).isEqualTo(objectKey);
+        // Atomic finalization invariant: a failed READY transition rolls back
+        // the metadata write in the same transaction, so the database never
+        // points at the erased remote object.
+        assertThat(functionVersionRepository.findById(functionVersion.getId()).orElseThrow().getArtifactMetadata())
+                .isEmpty();
     }
 
     @Test
@@ -369,7 +378,7 @@ class FunctionVersionDeploymentServiceTests {
         RecordingArtifactPublisher publisher = RecordingArtifactPublisher.returning(new PublishedArtifact(
                 functionVersion.getId(), FunctionVersionArtifactRegistry.artifactObjectKey(functionVersion.getId()), SHA256_A, SIZE_A));
         FunctionVersionDeploymentService service = new FunctionVersionDeploymentService(
-                buildWorkspaceService, registry, publisher, artifactRegistry, lifecycleRegistry);
+                buildWorkspaceService, registry, publisher, deploymentFinalizer, artifactRegistry, lifecycleRegistry);
 
         service.deploy(functionVersion.getId());
 
@@ -454,7 +463,7 @@ class FunctionVersionDeploymentServiceTests {
         RuntimeBuilderRegistry registry = new RuntimeBuilderRegistry(List.of(RecordingRuntimeBuilder.supporting("NODE")));
         RecordingArtifactPublisher publisher = RecordingArtifactPublisher.returning(null);
         FunctionVersionDeploymentService service = new FunctionVersionDeploymentService(
-                buildWorkspaceService, registry, publisher, artifactRegistry, lifecycleRegistry);
+                buildWorkspaceService, registry, publisher, deploymentFinalizer, artifactRegistry, lifecycleRegistry);
 
         assertThatThrownBy(() -> service.deploy(functionVersion.getId()))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -471,7 +480,8 @@ class FunctionVersionDeploymentServiceTests {
 
     private FunctionVersionDeploymentService service(ArtifactPublisher publisher, RuntimeBuilder runtimeBuilder) {
         return new FunctionVersionDeploymentService(
-                buildWorkspaceService, new RuntimeBuilderRegistry(List.of(runtimeBuilder)), publisher, artifactRegistry, lifecycleRegistry);
+                buildWorkspaceService, new RuntimeBuilderRegistry(List.of(runtimeBuilder)), publisher,
+                deploymentFinalizer, artifactRegistry, lifecycleRegistry);
     }
 
     private FunctionVersion createFunctionVersion() {
