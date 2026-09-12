@@ -3,6 +3,8 @@ package com.funchole.backend.controlplane.service;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.funchole.backend.controlplane.constant.FunctionVersionStatus;
+import com.funchole.backend.controlplane.entity.FunctionVersion;
 import com.funchole.backend.controlplane.entity.FunctionVersionSource;
 import com.funchole.backend.controlplane.entity.SourceBundle;
 import com.funchole.backend.controlplane.entity.SourceFile;
@@ -58,8 +60,16 @@ public class FunctionVersionSourceService {
         if (functionVersionId == null) {
             throw new IllegalArgumentException("functionVersionId is required");
         }
-        if (!functionVersionRepository.existsById(functionVersionId)) {
-            throw new ResourceNotFoundException("Function version not found: " + functionVersionId);
+        FunctionVersion functionVersion = functionVersionRepository.findById(functionVersionId)
+                .orElseThrow(() -> new ResourceNotFoundException("Function version not found: " + functionVersionId));
+        // Source is build input: it may be freely edited while a version is
+        // still DRAFT, but once deployment has begun (or finished, in either
+        // direction) it must stop moving under whatever the build already
+        // consumed - mirrors the status guard in FunctionVersionLifecycleRegistry.
+        if (functionVersion.getStatus() != FunctionVersionStatus.DRAFT) {
+            throw new IllegalStateException(
+                    "Function version must be DRAFT to submit source, current status is "
+                            + functionVersion.getStatus() + ": " + functionVersionId);
         }
         validateSourceBundle(sourceBundle);
 

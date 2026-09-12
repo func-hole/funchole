@@ -12,6 +12,7 @@ import com.funchole.backend.controlplane.repository.AppUserRepository;
 import com.funchole.backend.controlplane.repository.FunctionRepository;
 import com.funchole.backend.controlplane.repository.FunctionVersionRepository;
 import com.funchole.backend.controlplane.service.FunctionVersionArtifactRegistry;
+import com.funchole.backend.controlplane.service.FunctionVersionLifecycleRegistry;
 import com.funchole.backend.controlplane.service.FunctionVersionSourceService;
 import com.funchole.backend.core.base.exception.ResourceNotFoundException;
 import java.lang.reflect.Constructor;
@@ -63,6 +64,9 @@ class FunctionVersionSourceServiceTests {
 
     @Autowired
     private FunctionVersionSourceService sourceService;
+
+    @Autowired
+    private FunctionVersionLifecycleRegistry lifecycleRegistry;
 
     @Test
     void validMultiFileSourceSubmissionIsStoredAndReadableBack() {
@@ -191,6 +195,99 @@ class FunctionVersionSourceServiceTests {
                 .isPresent();
         assertThat(sourceService.findSource(functionVersion.getId()).orElseThrow().entrypoint())
                 .isEqualTo(validBundle().entrypoint());
+    }
+
+    @Test
+    void draftVersionAllowsIterativeSourceReplacement() {
+        FunctionVersion functionVersion = createFunctionVersion();
+
+        sourceService.submitSource(functionVersion.getId(), new SourceBundle("NODE", null, "a.js", List.of(
+                new SourceFile("a.js", "version A"))));
+        sourceService.submitSource(functionVersion.getId(), new SourceBundle("NODE", null, "b.js", List.of(
+                new SourceFile("b.js", "version B"))));
+        sourceService.submitSource(functionVersion.getId(), new SourceBundle("NODE", null, "c.js", List.of(
+                new SourceFile("c.js", "version C"))));
+
+        SourceBundle retrieved = sourceService.findSource(functionVersion.getId()).orElseThrow();
+        assertThat(retrieved.entrypoint()).isEqualTo("c.js");
+        assertThat(retrieved.files()).containsExactly(new SourceFile("c.js", "version C"));
+    }
+
+    @Test
+    void publishingVersionRejectsSourceModification() {
+        FunctionVersion functionVersion = createFunctionVersion();
+        sourceService.submitSource(functionVersion.getId(), validBundle());
+        lifecycleRegistry.beginPublishing(functionVersion.getId());
+
+        assertThatThrownBy(() -> sourceService.submitSource(functionVersion.getId(), new SourceBundle(
+                "NODE", null, "other.js", List.of(new SourceFile("other.js", "rejected")))))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("PUBLISHING");
+    }
+
+    @Test
+    void readyVersionRejectsSourceModification() {
+        FunctionVersion functionVersion = createFunctionVersion();
+        sourceService.submitSource(functionVersion.getId(), validBundle());
+        lifecycleRegistry.beginPublishing(functionVersion.getId());
+        lifecycleRegistry.markReady(functionVersion.getId());
+
+        assertThatThrownBy(() -> sourceService.submitSource(functionVersion.getId(), new SourceBundle(
+                "NODE", null, "other.js", List.of(new SourceFile("other.js", "rejected")))))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("READY");
+    }
+
+    @Test
+    void failedVersionRejectsSourceModification() {
+        FunctionVersion functionVersion = createFunctionVersion();
+        sourceService.submitSource(functionVersion.getId(), validBundle());
+        lifecycleRegistry.beginPublishing(functionVersion.getId());
+        lifecycleRegistry.markFailed(functionVersion.getId());
+
+        assertThatThrownBy(() -> sourceService.submitSource(functionVersion.getId(), new SourceBundle(
+                "NODE", null, "other.js", List.of(new SourceFile("other.js", "rejected")))))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("FAILED");
+    }
+
+    @Test
+    void rejectedSourceModificationLeavesPreviousSourceUnchanged() {
+        FunctionVersion functionVersion = createFunctionVersion();
+        sourceService.submitSource(functionVersion.getId(), validBundle());
+        lifecycleRegistry.beginPublishing(functionVersion.getId());
+
+        assertThatThrownBy(() -> sourceService.submitSource(functionVersion.getId(), new SourceBundle(
+                "NODE", null, "other.js", List.of(new SourceFile("other.js", "rejected")))))
+                .isInstanceOf(IllegalStateException.class);
+
+        SourceBundle retrieved = sourceService.findSource(functionVersion.getId()).orElseThrow();
+        assertThat(retrieved.runtimeType()).isEqualTo(validBundle().runtimeType());
+        assertThat(retrieved.runtimeVersion()).isEqualTo(validBundle().runtimeVersion());
+        assertThat(retrieved.entrypoint()).isEqualTo(validBundle().entrypoint());
+        assertThat(retrieved.files()).containsExactlyElementsOf(validBundle().files());
+    }
+
+    @Test
+    void artifactMetadataRemainsUnchangedAfterRejectedSourceModification() {
+        FunctionVersion functionVersion = createFunctionVersion();
+        sourceService.submitSource(functionVersion.getId(), validBundle());
+        lifecycleRegistry.beginPublishing(functionVersion.getId());
+        artifactRegistry.attachPublishedArtifact(
+                functionVersion.getId(),
+                FunctionVersionArtifactRegistry.artifactObjectKey(functionVersion.getId()),
+                FunctionVersionArtifactRegistry.ARTIFACT_FORMAT_TAR_GZ,
+                "a".repeat(64),
+                1024L
+        );
+        lifecycleRegistry.markReady(functionVersion.getId());
+
+        assertThatThrownBy(() -> sourceService.submitSource(functionVersion.getId(), new SourceBundle(
+                "NODE", null, "other.js", List.of(new SourceFile("other.js", "rejected")))))
+                .isInstanceOf(IllegalStateException.class);
+
+        assertThat(functionVersionRepository.findById(functionVersion.getId()).orElseThrow().getArtifactMetadata())
+                .hasValueSatisfying(metadata -> assertThat(metadata.sha256()).isEqualTo("a".repeat(64)));
     }
 
     @Test
