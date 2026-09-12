@@ -14,15 +14,18 @@ import com.funchole.backend.controlplane.repository.AppUserRepository;
 import com.funchole.backend.controlplane.repository.FunctionRepository;
 import com.funchole.backend.controlplane.repository.FunctionVersionRepository;
 import com.funchole.backend.controlplane.service.DirectFunctionInvocationCommand;
-import com.funchole.backend.controlplane.service.DirectInvocationResult;
 import com.funchole.backend.controlplane.service.FunctionVersionArtifactRegistry;
 import com.funchole.backend.controlplane.service.FunctionVersionDeploymentFinalizer;
-import com.funchole.backend.controlplane.service.FunctionVersionInvocationHandoff;
 import com.funchole.backend.controlplane.service.FunctionVersionInvocationService;
-import com.funchole.backend.controlplane.service.FunctionVersionInvocationSpec;
 import com.funchole.backend.controlplane.service.FunctionVersionLifecycleRegistry;
 import com.funchole.backend.controlplane.service.FunctionVersionSourceService;
 import com.funchole.backend.core.base.exception.ResourceNotFoundException;
+import com.funchole.backend.invocation.DirectInvocationRequest;
+import com.funchole.backend.invocation.DirectInvocationResult;
+import com.funchole.backend.invocation.FunctionVersionInvocationHandoff;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -89,7 +92,7 @@ class FunctionVersionInvocationServiceTests {
         DirectInvocationResult result = service(recordingHandoff)
                 .invoke(new DirectFunctionInvocationCommand(functionVersion.getId(), "{}"));
 
-        FunctionVersionInvocationSpec handed = recordingHandoff.lastSpec();
+        DirectInvocationRequest handed = recordingHandoff.lastRequest();
         assertThat(handed.functionVersionId()).isEqualTo(functionVersion.getId());
         assertThat(handed.functionId()).isEqualTo(functionVersion.getFunction().getId());
         assertThat(handed.functionKey()).isEqualTo(functionVersion.getFunction().getFunctionKey());
@@ -150,7 +153,7 @@ class FunctionVersionInvocationServiceTests {
 
         service(recordingHandoff).invoke(new DirectFunctionInvocationCommand(functionVersion.getId(), inputPayload));
 
-        assertThat(recordingHandoff.lastSpec().inputPayload()).isEqualTo(inputPayload);
+        assertThat(recordingHandoff.lastRequest().inputPayload()).isEqualTo(inputPayload);
     }
 
     @Test
@@ -159,10 +162,10 @@ class FunctionVersionInvocationServiceTests {
 
         service(recordingHandoff).invoke(new DirectFunctionInvocationCommand(functionVersion.getId(), "{}"));
 
-        // The handed spec carries only the FunctionVersion identity that was
-        // supplied; no Flow ids, Flow versions, or routes exist anywhere on
-        // this path. Pinned identity comes straight from the durable version.
-        FunctionVersionInvocationSpec handed = recordingHandoff.lastSpec();
+        // The handed request carries only the FunctionVersion identity that
+        // was supplied; no Flow ids, Flow versions, or routes exist anywhere
+        // on this path. Pinned identity comes straight from the durable version.
+        DirectInvocationRequest handed = recordingHandoff.lastRequest();
         assertThat(handed.functionVersionId()).isEqualTo(functionVersion.getId());
         // and the runtime type is carried from the FunctionVersion, not hardcoded:
         assertThat(handed.runtimeType()).isEqualTo(functionVersion.getRuntime());
@@ -175,7 +178,7 @@ class FunctionVersionInvocationServiceTests {
 
         service(recordingHandoff).invoke(new DirectFunctionInvocationCommand(functionVersion.getId(), "{}"));
 
-        assertThat(recordingHandoff.lastSpec().runtimeType()).isEqualTo(functionVersion.getRuntime());
+        assertThat(recordingHandoff.lastRequest().runtimeType()).isEqualTo(functionVersion.getRuntime());
     }
 
     @Test
@@ -239,34 +242,71 @@ class FunctionVersionInvocationServiceTests {
     private RecordingHandoff recordingHandoff = new RecordingHandoff();
     private ThrowingHandoff throwingHandoff = new ThrowingHandoff();
 
+    @Test
+    void serviceHasNoDependencyOnInvocationImplementationOrExecutionClasses() {
+        List<String> forbiddenPackagePrefixes = List.of(
+                "com.funchole.backend.dispatcher",
+                "com.funchole.backend.runtimeregistry",
+                "com.funchole.backend.runtime"
+        );
+        List<String> forbiddenExactClasses = List.of(
+                "com.funchole.backend.invocation.JdbcInvocationRegistry",
+                "com.funchole.backend.invocation.Invocation",
+                "com.funchole.backend.invocation.InvocationRegistry"
+        );
+        for (Field field : FunctionVersionInvocationService.class.getDeclaredFields()) {
+            assertTypeIsAllowed(field.getType(), forbiddenPackagePrefixes, forbiddenExactClasses);
+        }
+        for (Constructor<?> constructor : FunctionVersionInvocationService.class.getDeclaredConstructors()) {
+            for (Class<?> parameterType : constructor.getParameterTypes()) {
+                assertTypeIsAllowed(parameterType, forbiddenPackagePrefixes, forbiddenExactClasses);
+            }
+        }
+        for (Method method : FunctionVersionInvocationService.class.getDeclaredMethods()) {
+            assertTypeIsAllowed(method.getReturnType(), forbiddenPackagePrefixes, forbiddenExactClasses);
+            for (Class<?> parameterType : method.getParameterTypes()) {
+                assertTypeIsAllowed(parameterType, forbiddenPackagePrefixes, forbiddenExactClasses);
+            }
+        }
+    }
+
+    private void assertTypeIsAllowed(Class<?> type, List<String> forbiddenPackagePrefixes, List<String> forbiddenExactClasses) {
+        assertThat(forbiddenExactClasses).doesNotContain(type.getName());
+        for (String forbidden : forbiddenPackagePrefixes) {
+            assertThat(type.getPackageName().startsWith(forbidden))
+                    .as("type %s must not belong to package %s", type.getName(), forbidden)
+                    .isFalse();
+        }
+    }
+
     private static final class InMemoryHandoff implements FunctionVersionInvocationHandoff {
         @Override
-        public DirectInvocationResult dispatch(FunctionVersionInvocationSpec spec) {
-            return new DirectInvocationResult(UUID.randomUUID(), spec.functionVersionId(), "PENDING");
+        public DirectInvocationResult dispatch(DirectInvocationRequest request) {
+            return new DirectInvocationResult(UUID.randomUUID(), request.functionVersionId(), "PENDING");
         }
     }
 
     private static final class RecordingHandoff implements FunctionVersionInvocationHandoff {
-        private final List<FunctionVersionInvocationSpec> specs = new CopyOnWriteArrayList<>();
+        private final List<DirectInvocationRequest> requests = new CopyOnWriteArrayList<>();
 
         @Override
-        public DirectInvocationResult dispatch(FunctionVersionInvocationSpec spec) {
-            specs.add(spec);
-            return new DirectInvocationResult(UUID.randomUUID(), spec.functionVersionId(), "PENDING");
+        public DirectInvocationResult dispatch(DirectInvocationRequest request) {
+            requests.add(request);
+            return new DirectInvocationResult(UUID.randomUUID(), request.functionVersionId(), "PENDING");
         }
 
-        FunctionVersionInvocationSpec lastSpec() {
-            return specs.get(specs.size() - 1);
+        DirectInvocationRequest lastRequest() {
+            return requests.get(requests.size() - 1);
         }
 
         int invocations() {
-            return specs.size();
+            return requests.size();
         }
     }
 
     private static final class ThrowingHandoff implements FunctionVersionInvocationHandoff {
         @Override
-        public DirectInvocationResult dispatch(FunctionVersionInvocationSpec spec) {
+        public DirectInvocationResult dispatch(DirectInvocationRequest request) {
             throw new FunctionVersionInvocationHandoff.FunctionVersionInvocationDispatchException(
                     "simulated dispatch failure");
         }

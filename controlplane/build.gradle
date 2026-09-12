@@ -8,6 +8,11 @@ dependencies {
     implementation project(':certificate')
     implementation project(':core')
     implementation project(':artifact')
+    // Only the invocation module's small boundary contract is used here
+    // (FunctionVersionInvocationHandoff / DirectInvocationRequest /
+    // DirectInvocationResult) - never JdbcInvocationRegistry, the persisted
+    // Invocation record, the Dispatcher, or the Runtime Registry.
+    implementation project(':invocation')
 
     implementation 'org.springframework.boot:spring-boot-starter-actuator'
     implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
