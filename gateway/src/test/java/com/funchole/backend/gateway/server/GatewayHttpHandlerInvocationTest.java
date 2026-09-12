@@ -15,6 +15,7 @@ import com.funchole.backend.gateway.flow.FlowResolver;
 import com.funchole.backend.invocation.CreateInvocationRequest;
 import com.funchole.backend.invocation.DirectInvocationRequest;
 import com.funchole.backend.invocation.Invocation;
+import com.funchole.backend.invocation.InvocationKind;
 import com.funchole.backend.invocation.InvocationRegistry;
 import com.funchole.backend.invocation.InvocationStatus;
 import com.funchole.backend.invocation.InvocationTransition;
@@ -391,6 +392,7 @@ class GatewayHttpHandlerInvocationTest {
             String effectiveResult = result != null || resultOnFirstFind == null ? result : resultOnFirstFind;
             return new Invocation(
                     INVOCATION_ID,
+                    InvocationKind.FLOW,
                     request.flowId(),
                     request.flowKey(),
                     request.flowVersionId(),

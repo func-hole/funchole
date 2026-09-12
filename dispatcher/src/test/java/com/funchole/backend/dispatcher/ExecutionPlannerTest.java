@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.funchole.backend.invocation.Invocation;
 import com.funchole.backend.invocation.InvocationFlowSnapshot;
+import com.funchole.backend.invocation.InvocationKind;
 import com.funchole.backend.invocation.InvocationSnapshot;
 import com.funchole.backend.invocation.InvocationStatus;
 import com.funchole.backend.invocation.InvocationStepSnapshot;
@@ -141,6 +142,7 @@ class ExecutionPlannerTest {
     private Invocation invocation() {
         return new Invocation(
                 INVOCATION_ID,
+                InvocationKind.FLOW,
                 FLOW_ID,
                 "flw_orders_list",
                 FLOW_VERSION_ID,

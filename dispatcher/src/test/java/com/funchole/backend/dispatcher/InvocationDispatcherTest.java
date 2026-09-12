@@ -126,6 +126,7 @@ class InvocationDispatcherTest {
             statement.execute("""
                     create table invocations (
                         id UUID primary key,
+                        kind VARCHAR(50) not null,
                         flow_id UUID not null,
                         flow_key VARCHAR(150) not null,
                         flow_version_id UUID not null,

@@ -5,6 +5,7 @@ import java.util.UUID;
 
 public record Invocation(
         UUID invocationId,
+        InvocationKind kind,
         UUID flowId,
         String flowKey,
         UUID flowVersionId,

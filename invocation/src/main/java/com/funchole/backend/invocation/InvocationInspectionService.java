@@ -1,7 +1,5 @@
 package com.funchole.backend.invocation;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import java.util.List;
 import java.util.UUID;
 
 /**
@@ -13,18 +11,20 @@ import java.util.UUID;
  *
  * <p>Performs no waiting, polling, or re-execution: one call, one durable
  * read, one {@link InvocationInspection}. Depends only on
- * {@link InvocationRegistry} and plain JSON parsing of already-persisted
- * data - no HTTP, MCP, or CLI type appears anywhere in this class, so a
- * Web/API, CLI, or MCP adapter can call it directly later.
+ * {@link InvocationRegistry} - no HTTP, MCP, or CLI type appears anywhere
+ * in this class, so a Web/API, CLI, or MCP adapter can call it directly
+ * later.
+ *
+ * <p>Which identity fields the result carries is decided purely by the
+ * durable {@link InvocationKind} column - never by inspecting
+ * {@code dependencySnapshot} shape, which is execution data, not identity.
  */
 public class InvocationInspectionService {
 
     private final InvocationRegistry invocationRegistry;
-    private final ObjectMapper objectMapper;
 
     public InvocationInspectionService(InvocationRegistry invocationRegistry) {
         this.invocationRegistry = invocationRegistry;
-        this.objectMapper = new ObjectMapper();
     }
 
     public InvocationInspection inspect(UUID invocationId) {
@@ -34,8 +34,8 @@ public class InvocationInspectionService {
         Invocation invocation = invocationRegistry.findById(invocationId)
                 .orElseThrow(() -> new IllegalStateException("Invocation not found: " + invocationId));
 
-        if (isDirectFunctionVersionInvocation(invocation)) {
-            return new InvocationInspection(
+        return switch (invocation.kind()) {
+            case DIRECT_FUNCTION -> new InvocationInspection(
                     invocation.invocationId(),
                     invocation.status(),
                     null,
@@ -49,49 +49,20 @@ public class InvocationInspectionService {
                     invocation.updatedAt(),
                     invocation.completedAt()
             );
-        }
-
-        return new InvocationInspection(
-                invocation.invocationId(),
-                invocation.status(),
-                invocation.flowId(),
-                invocation.flowKey(),
-                invocation.flowVersionId(),
-                null,
-                invocation.inputPayload(),
-                invocation.result(),
-                invocation.error(),
-                invocation.createdAt(),
-                invocation.updatedAt(),
-                invocation.completedAt()
-        );
-    }
-
-    /**
-     * A direct FunctionVersion invocation and a normal Flow invocation are
-     * persisted through the identical {@code invocations} row shape (see
-     * {@link JdbcInvocationRegistry#createDirectInvocation}), so the only
-     * durable signal telling them apart is the dependency snapshot's shape:
-     * exactly one flow with exactly one step keyed
-     * {@link DirectInvocationRequest#DIRECT_INVOCATION_STEP_KEY}.
-     */
-    private boolean isDirectFunctionVersionInvocation(Invocation invocation) {
-        if (invocation.dependencySnapshot() == null) {
-            return false;
-        }
-        InvocationSnapshot snapshot;
-        try {
-            snapshot = objectMapper.readValue(invocation.dependencySnapshot(), InvocationSnapshot.class);
-        } catch (Exception exception) {
-            return false;
-        }
-        List<InvocationFlowSnapshot> flows = snapshot.flows();
-        if (flows == null || flows.size() != 1) {
-            return false;
-        }
-        List<InvocationStepSnapshot> steps = flows.get(0).steps();
-        return steps != null
-                && steps.size() == 1
-                && DirectInvocationRequest.DIRECT_INVOCATION_STEP_KEY.equals(steps.get(0).stepKey());
+            case FLOW -> new InvocationInspection(
+                    invocation.invocationId(),
+                    invocation.status(),
+                    invocation.flowId(),
+                    invocation.flowKey(),
+                    invocation.flowVersionId(),
+                    null,
+                    invocation.inputPayload(),
+                    invocation.result(),
+                    invocation.error(),
+                    invocation.createdAt(),
+                    invocation.updatedAt(),
+                    invocation.completedAt()
+            );
+        };
     }
 }

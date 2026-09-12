@@ -19,7 +19,7 @@ import javax.sql.DataSource;
 public final class JdbcInvocationRegistry implements InvocationRegistry {
 
     private static final String SELECT_COLUMNS = """
-            id, flow_id, flow_key, flow_version_id, status, input_payload, dependency_snapshot,
+            id, kind, flow_id, flow_key, flow_version_id, status, input_payload, dependency_snapshot,
             result, error, created_at, updated_at, completed_at
             """;
 
@@ -46,6 +46,7 @@ public final class JdbcInvocationRegistry implements InvocationRegistry {
             Invocation invocation = insertInvocation(
                     connection,
                     invocationId,
+                    InvocationKind.FLOW,
                     request.flowId(),
                     request.flowKey(),
                     request.flowVersionId(),
@@ -68,6 +69,7 @@ public final class JdbcInvocationRegistry implements InvocationRegistry {
             Invocation invocation = insertInvocation(
                     connection,
                     invocationId,
+                    InvocationKind.DIRECT_FUNCTION,
                     request.functionId(),
                     request.functionKey(),
                     request.functionVersionId(),
@@ -120,6 +122,7 @@ public final class JdbcInvocationRegistry implements InvocationRegistry {
     private Invocation insertInvocation(
             Connection connection,
             UUID invocationId,
+            InvocationKind kind,
             UUID flowId,
             String flowKey,
             UUID flowVersionId,
@@ -129,6 +132,7 @@ public final class JdbcInvocationRegistry implements InvocationRegistry {
         try (PreparedStatement statement = connection.prepareStatement("""
                     insert into invocations (
                         id,
+                        kind,
                         flow_id,
                         flow_key,
                         flow_version_id,
@@ -136,17 +140,17 @@ public final class JdbcInvocationRegistry implements InvocationRegistry {
                         input_payload,
                         dependency_snapshot
                     )
-                    values (?, ?, ?, ?, ?, ?, ?)
-                    returning id, flow_id, flow_key, flow_version_id, status, input_payload, dependency_snapshot,
-                        result, error, created_at, updated_at, completed_at
-                    """)) {
+                    values (?, ?, ?, ?, ?, ?, ?, ?)
+                    returning
+                    """ + SELECT_COLUMNS)) {
             statement.setObject(1, invocationId);
-            statement.setObject(2, flowId);
-            statement.setString(3, flowKey);
-            statement.setObject(4, flowVersionId);
-            statement.setString(5, InvocationStatus.PENDING.name());
-            statement.setObject(6, inputPayload, Types.OTHER);
-            statement.setObject(7, dependencySnapshot, Types.OTHER);
+            statement.setString(2, kind.name());
+            statement.setObject(3, flowId);
+            statement.setString(4, flowKey);
+            statement.setObject(5, flowVersionId);
+            statement.setString(6, InvocationStatus.PENDING.name());
+            statement.setObject(7, inputPayload, Types.OTHER);
+            statement.setObject(8, dependencySnapshot, Types.OTHER);
 
             try (ResultSet resultSet = statement.executeQuery()) {
                 if (resultSet.next()) {
@@ -270,6 +274,7 @@ public final class JdbcInvocationRegistry implements InvocationRegistry {
     private Invocation toInvocation(ResultSet resultSet) throws SQLException {
         return new Invocation(
                 resultSet.getObject("id", UUID.class),
+                parseKind(resultSet.getString("kind")),
                 resultSet.getObject("flow_id", UUID.class),
                 resultSet.getString("flow_key"),
                 resultSet.getObject("flow_version_id", UUID.class),
@@ -282,6 +287,22 @@ public final class JdbcInvocationRegistry implements InvocationRegistry {
                 resultSet.getObject("updated_at", OffsetDateTime.class),
                 resultSet.getObject("completed_at", OffsetDateTime.class)
         );
+    }
+
+    /**
+     * The {@code kind} column is never allowed to silently become FLOW: a
+     * missing value or an unrecognized string both fail clearly here rather
+     * than being reinterpreted.
+     */
+    private InvocationKind parseKind(String kind) {
+        if (kind == null) {
+            throw new IllegalStateException("Invocation kind is missing");
+        }
+        try {
+            return InvocationKind.valueOf(kind);
+        } catch (IllegalArgumentException exception) {
+            throw new IllegalStateException("Unknown invocation kind: " + kind, exception);
+        }
     }
 
     private InvocationSnapshot resolveSnapshot(Connection connection, CreateInvocationRequest request) {

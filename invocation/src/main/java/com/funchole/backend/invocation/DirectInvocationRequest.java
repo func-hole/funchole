@@ -24,10 +24,10 @@ public record DirectInvocationRequest(
 
     /**
      * The single step key {@link JdbcInvocationRegistry} writes into the
-     * dependency snapshot of every direct FunctionVersion invocation - the
-     * only signal that later distinguishes such an invocation from a normal
-     * Flow invocation, since both are persisted through the exact same
-     * {@code invocations} row shape.
+     * dependency snapshot of every direct FunctionVersion invocation. This
+     * is execution data only - the durable {@link InvocationKind} column is
+     * what actually distinguishes a direct invocation from a normal Flow
+     * invocation, never this step key or any other snapshot shape.
      */
     public static final String DIRECT_INVOCATION_STEP_KEY = "invoke-function";
 }

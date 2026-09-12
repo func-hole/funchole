@@ -113,6 +113,7 @@ class JdbcInvocationRegistryTest {
             statement.execute("""
                     create table invocations (
                         id UUID primary key,
+                        kind VARCHAR(50) not null,
                         flow_id UUID not null,
                         flow_key VARCHAR(150) not null,
                         flow_version_id UUID not null,
@@ -148,6 +149,7 @@ class JdbcInvocationRegistryTest {
         ));
 
         assertNotNull(invocation.invocationId());
+        assertEquals(InvocationKind.FLOW, invocation.kind());
         assertEquals(flowId, invocation.flowId());
         assertEquals("flw_checkout", invocation.flowKey());
         assertEquals(flowVersionId, invocation.flowVersionId());
@@ -160,12 +162,37 @@ class JdbcInvocationRegistryTest {
         Invocation retrieved = registry.findById(invocation.invocationId()).orElseThrow();
 
         assertEquals(invocation.invocationId(), retrieved.invocationId());
+        assertEquals(InvocationKind.FLOW, retrieved.kind());
         assertEquals(flowId, retrieved.flowId());
         assertEquals("flw_checkout", retrieved.flowKey());
         assertEquals(flowVersionId, retrieved.flowVersionId());
         assertEquals(InvocationStatus.PENDING, retrieved.status());
         assertJsonEquals(inputPayload, retrieved.inputPayload());
         assertSnapshotContainsRoot(retrieved.dependencySnapshot(), flowId, "flw_checkout", flowVersionId);
+    }
+
+    @Test
+    void createsDirectFunctionVersionInvocationWithDirectFunctionKind() {
+        UUID functionId = UUID.randomUUID();
+        UUID functionVersionId = UUID.randomUUID();
+
+        Invocation invocation = registry.createDirectInvocation(new DirectInvocationRequest(
+                functionId,
+                "fn_checkout",
+                functionVersionId,
+                "NODE",
+                "{}"
+        ));
+
+        assertEquals(InvocationKind.DIRECT_FUNCTION, invocation.kind());
+        assertEquals(functionId, invocation.flowId());
+        assertEquals("fn_checkout", invocation.flowKey());
+        assertEquals(functionVersionId, invocation.flowVersionId());
+        assertEquals(InvocationStatus.PENDING, invocation.status());
+
+        Invocation retrieved = registry.findById(invocation.invocationId()).orElseThrow();
+        assertEquals(InvocationKind.DIRECT_FUNCTION, retrieved.kind());
+        assertEquals(functionVersionId, retrieved.flowVersionId());
     }
 
     @Test

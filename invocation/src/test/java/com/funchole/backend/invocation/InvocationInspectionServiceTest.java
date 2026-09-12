@@ -95,6 +95,7 @@ class InvocationInspectionServiceTest {
             statement.execute("""
                     create table invocations (
                         id UUID primary key,
+                        kind VARCHAR(50) not null,
                         flow_id UUID not null,
                         flow_key VARCHAR(150) not null,
                         flow_version_id UUID not null,
@@ -194,6 +195,66 @@ class InvocationInspectionServiceTest {
     }
 
     @Test
+    void inspectionUsesPersistedKindWithoutParsingSnapshotStructure() {
+        // A DIRECT_FUNCTION-kind row whose dependencySnapshot does not match
+        // the old "one flow, one step named invoke-function" shape at all -
+        // proves classification comes from the persisted kind column alone.
+        UUID invocationId = UUID.randomUUID();
+        UUID functionVersionId = UUID.randomUUID();
+        insertRawInvocation(invocationId, InvocationKind.DIRECT_FUNCTION.name(), UUID.randomUUID(), "fn_x",
+                functionVersionId, "{\"totally\":\"unrelated\",\"shape\":true}");
+
+        InvocationInspection inspection = inspectionService.inspect(invocationId);
+
+        assertEquals(functionVersionId, inspection.functionVersionId());
+        assertNull(inspection.flowId());
+    }
+
+    @Test
+    void malformedDependencySnapshotDoesNotChangeInvocationClassification() {
+        UUID invocationId = UUID.randomUUID();
+        UUID flowId = UUID.randomUUID();
+        UUID flowVersionId = UUID.randomUUID();
+        insertRawInvocation(invocationId, InvocationKind.FLOW.name(), flowId, "flw_broken", flowVersionId,
+                "{\"nothing\":\"like a real snapshot\"}");
+
+        InvocationInspection inspection = inspectionService.inspect(invocationId);
+
+        assertEquals(flowId, inspection.flowId());
+        assertEquals("flw_broken", inspection.flowKey());
+        assertNull(inspection.functionVersionId());
+    }
+
+    @Test
+    void singleStepFlowCannotBeMisclassifiedAsDirectFunction() {
+        // Deliberately mimics the OLD (removed) heuristic's shape - one flow,
+        // one step, keyed exactly like a direct invocation's step - through
+        // a genuine Flow invocation, to prove kind persistence (not snapshot
+        // shape) now governs classification.
+        UUID flowId = UUID.randomUUID();
+        UUID flowVersionId = UUID.randomUUID();
+        insertFlow(flowId, "flw_single_step", flowVersionId);
+        insertStep(flowVersionId, DirectInvocationRequest.DIRECT_INVOCATION_STEP_KEY, "FUNCTION", 1,
+                UUID.randomUUID(), UUID.randomUUID());
+        Invocation invocation = registry.create(new CreateInvocationRequest(flowId, "flw_single_step", flowVersionId, "{}"));
+
+        InvocationInspection inspection = inspectionService.inspect(invocation.invocationId());
+
+        assertEquals(InvocationKind.FLOW, invocation.kind());
+        assertEquals(flowId, inspection.flowId());
+        assertEquals(flowVersionId, inspection.flowVersionId());
+        assertNull(inspection.functionVersionId());
+    }
+
+    @Test
+    void invalidPersistedInvocationKindFailsClearly() {
+        UUID invocationId = UUID.randomUUID();
+        insertRawInvocation(invocationId, "BOGUS", UUID.randomUUID(), "flw_x", UUID.randomUUID(), "{}");
+
+        assertThrows(IllegalStateException.class, () -> inspectionService.inspect(invocationId));
+    }
+
+    @Test
     void missingInvocationIsRejectedClearly() {
         UUID missingId = UUID.randomUUID();
 
@@ -257,6 +318,46 @@ class InvocationInspectionServiceTest {
                     """.formatted(flowVersionId, flowId));
         } catch (Exception exception) {
             throw new IllegalStateException("Failed to insert flow test data", exception);
+        }
+    }
+
+    private void insertStep(
+            UUID flowVersionId, String stepKey, String componentType, int position, UUID componentId, UUID componentVersionId
+    ) {
+        try (
+                Connection connection = dataSource().getConnection();
+                Statement statement = connection.createStatement()
+        ) {
+            statement.execute("""
+                    insert into flow_steps (id, flow_version_id, step_key, component_type, position, component_id, component_version_id)
+                    values ('%s', '%s', '%s', '%s', %s, '%s', '%s')
+                    """.formatted(UUID.randomUUID(), flowVersionId, stepKey, componentType, position, componentId, componentVersionId));
+        } catch (Exception exception) {
+            throw new IllegalStateException("Failed to insert flow step test data", exception);
+        }
+    }
+
+    /**
+     * Inserts an {@code invocations} row directly via SQL, bypassing
+     * {@link JdbcInvocationRegistry} entirely - used to construct rows the
+     * registry's own create paths could never produce (an arbitrary/invalid
+     * {@code kind}, or a dependencySnapshot unrelated to the persisted kind),
+     * so classification behavior can be tested against exactly what is
+     * durably stored rather than what a normal creation path would write.
+     */
+    private void insertRawInvocation(
+            UUID invocationId, String kindLiteral, UUID flowId, String flowKey, UUID flowVersionId, String dependencySnapshotJson
+    ) {
+        try (
+                Connection connection = dataSource().getConnection();
+                Statement statement = connection.createStatement()
+        ) {
+            statement.execute("""
+                    insert into invocations (id, kind, flow_id, flow_key, flow_version_id, status, dependency_snapshot)
+                    values ('%s', '%s', '%s', '%s', '%s', 'PENDING', '%s'::jsonb)
+                    """.formatted(invocationId, kindLiteral, flowId, flowKey, flowVersionId, dependencySnapshotJson));
+        } catch (Exception exception) {
+            throw new IllegalStateException("Failed to insert raw invocation test data", exception);
         }
     }
 }
