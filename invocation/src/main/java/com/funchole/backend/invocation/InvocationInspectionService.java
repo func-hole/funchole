@@ -41,7 +41,7 @@ public class InvocationInspectionService {
                     null,
                     null,
                     null,
-                    invocation.flowVersionId(),
+                    invocation.functionVersionId(),
                     invocation.inputPayload(),
                     invocation.result(),
                     invocation.error(),

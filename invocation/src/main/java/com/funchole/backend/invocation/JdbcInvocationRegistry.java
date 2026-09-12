@@ -19,8 +19,8 @@ import javax.sql.DataSource;
 public final class JdbcInvocationRegistry implements InvocationRegistry {
 
     private static final String SELECT_COLUMNS = """
-            id, kind, flow_id, flow_key, flow_version_id, status, input_payload, dependency_snapshot,
-            result, error, created_at, updated_at, completed_at
+            id, kind, flow_id, flow_key, flow_version_id, function_id, function_key, function_version_id,
+            status, input_payload, dependency_snapshot, result, error, created_at, updated_at, completed_at
             """;
 
     private final DataSource dataSource;
@@ -50,6 +50,9 @@ public final class JdbcInvocationRegistry implements InvocationRegistry {
                     request.flowId(),
                     request.flowKey(),
                     request.flowVersionId(),
+                    null,
+                    null,
+                    null,
                     request.inputPayload(),
                     dependencySnapshot
             );
@@ -70,6 +73,9 @@ public final class JdbcInvocationRegistry implements InvocationRegistry {
                     connection,
                     invocationId,
                     InvocationKind.DIRECT_FUNCTION,
+                    null,
+                    null,
+                    null,
                     request.functionId(),
                     request.functionKey(),
                     request.functionVersionId(),
@@ -126,9 +132,35 @@ public final class JdbcInvocationRegistry implements InvocationRegistry {
             UUID flowId,
             String flowKey,
             UUID flowVersionId,
+            UUID functionId,
+            String functionKey,
+            UUID functionVersionId,
             String inputPayload,
             String dependencySnapshot
     ) throws SQLException {
+        // Identity invariants per kind: a FLOW invocation carries only Flow
+        // identity, a DIRECT_FUNCTION invocation carries only function
+        // identity. Wrong/missing identity for the declared kind fails
+        // clearly instead of silently writing a semantically misleading row.
+        if (kind == InvocationKind.FLOW) {
+            if (flowId == null || flowKey == null || flowVersionId == null) {
+                throw new IllegalArgumentException("A FLOW invocation requires flowId, flowKey, and flowVersionId");
+            }
+            if (functionId != null || functionKey != null || functionVersionId != null) {
+                throw new IllegalArgumentException("A FLOW invocation must not carry function identity");
+            }
+        } else if (kind == InvocationKind.DIRECT_FUNCTION) {
+            if (functionId == null || functionKey == null || functionVersionId == null) {
+                throw new IllegalArgumentException(
+                        "A DIRECT_FUNCTION invocation requires functionId, functionKey, and functionVersionId");
+            }
+            if (flowId != null || flowKey != null || flowVersionId != null) {
+                throw new IllegalArgumentException("A DIRECT_FUNCTION invocation must not carry Flow identity");
+            }
+        } else {
+            throw new IllegalArgumentException("Unknown invocation kind: " + kind);
+        }
+
         try (PreparedStatement statement = connection.prepareStatement("""
                     insert into invocations (
                         id,
@@ -136,11 +168,14 @@ public final class JdbcInvocationRegistry implements InvocationRegistry {
                         flow_id,
                         flow_key,
                         flow_version_id,
+                        function_id,
+                        function_key,
+                        function_version_id,
                         status,
                         input_payload,
                         dependency_snapshot
                     )
-                    values (?, ?, ?, ?, ?, ?, ?, ?)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     returning
                     """ + SELECT_COLUMNS)) {
             statement.setObject(1, invocationId);
@@ -148,9 +183,12 @@ public final class JdbcInvocationRegistry implements InvocationRegistry {
             statement.setObject(3, flowId);
             statement.setString(4, flowKey);
             statement.setObject(5, flowVersionId);
-            statement.setString(6, InvocationStatus.PENDING.name());
-            statement.setObject(7, inputPayload, Types.OTHER);
-            statement.setObject(8, dependencySnapshot, Types.OTHER);
+            statement.setObject(6, functionId);
+            statement.setString(7, functionKey);
+            statement.setObject(8, functionVersionId);
+            statement.setString(9, InvocationStatus.PENDING.name());
+            statement.setObject(10, inputPayload, Types.OTHER);
+            statement.setObject(11, dependencySnapshot, Types.OTHER);
 
             try (ResultSet resultSet = statement.executeQuery()) {
                 if (resultSet.next()) {
@@ -278,6 +316,9 @@ public final class JdbcInvocationRegistry implements InvocationRegistry {
                 resultSet.getObject("flow_id", UUID.class),
                 resultSet.getString("flow_key"),
                 resultSet.getObject("flow_version_id", UUID.class),
+                resultSet.getObject("function_id", UUID.class),
+                resultSet.getString("function_key"),
+                resultSet.getObject("function_version_id", UUID.class),
                 InvocationStatus.valueOf(resultSet.getString("status")),
                 resultSet.getString("input_payload"),
                 resultSet.getString("dependency_snapshot"),

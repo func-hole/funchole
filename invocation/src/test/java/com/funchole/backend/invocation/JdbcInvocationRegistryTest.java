@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -114,9 +115,12 @@ class JdbcInvocationRegistryTest {
                     create table invocations (
                         id UUID primary key,
                         kind VARCHAR(50) not null,
-                        flow_id UUID not null,
-                        flow_key VARCHAR(150) not null,
-                        flow_version_id UUID not null,
+                        flow_id UUID,
+                        flow_key VARCHAR(150),
+                        flow_version_id UUID,
+                        function_id UUID,
+                        function_key VARCHAR(255),
+                        function_version_id UUID,
                         status VARCHAR(100) not null,
                         input_payload JSONB,
                         dependency_snapshot JSONB,
@@ -153,6 +157,10 @@ class JdbcInvocationRegistryTest {
         assertEquals(flowId, invocation.flowId());
         assertEquals("flw_checkout", invocation.flowKey());
         assertEquals(flowVersionId, invocation.flowVersionId());
+        // Flow invocation persistence carries no function identity at all.
+        assertNull(invocation.functionId());
+        assertNull(invocation.functionKey());
+        assertNull(invocation.functionVersionId());
         assertEquals(InvocationStatus.PENDING, invocation.status());
         assertJsonEquals(inputPayload, invocation.inputPayload());
         assertSnapshotContainsRoot(invocation.dependencySnapshot(), flowId, "flw_checkout", flowVersionId);
@@ -185,14 +193,24 @@ class JdbcInvocationRegistryTest {
         ));
 
         assertEquals(InvocationKind.DIRECT_FUNCTION, invocation.kind());
-        assertEquals(functionId, invocation.flowId());
-        assertEquals("fn_checkout", invocation.flowKey());
-        assertEquals(functionVersionId, invocation.flowVersionId());
+        // Function identity lives only in the explicit function columns.
+        assertEquals(functionId, invocation.functionId());
+        assertEquals("fn_checkout", invocation.functionKey());
+        assertEquals(functionVersionId, invocation.functionVersionId());
+        // No function ids are written into the Flow identity columns.
+        assertNull(invocation.flowId());
+        assertNull(invocation.flowKey());
+        assertNull(invocation.flowVersionId());
         assertEquals(InvocationStatus.PENDING, invocation.status());
 
         Invocation retrieved = registry.findById(invocation.invocationId()).orElseThrow();
         assertEquals(InvocationKind.DIRECT_FUNCTION, retrieved.kind());
-        assertEquals(functionVersionId, retrieved.flowVersionId());
+        assertEquals(functionId, retrieved.functionId());
+        assertEquals("fn_checkout", retrieved.functionKey());
+        assertEquals(functionVersionId, retrieved.functionVersionId());
+        assertNull(retrieved.flowId());
+        assertNull(retrieved.flowKey());
+        assertNull(retrieved.flowVersionId());
     }
 
     @Test

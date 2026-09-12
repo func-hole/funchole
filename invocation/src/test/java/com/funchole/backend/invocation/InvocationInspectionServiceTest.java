@@ -96,9 +96,12 @@ class InvocationInspectionServiceTest {
                     create table invocations (
                         id UUID primary key,
                         kind VARCHAR(50) not null,
-                        flow_id UUID not null,
-                        flow_key VARCHAR(150) not null,
-                        flow_version_id UUID not null,
+                        flow_id UUID,
+                        flow_key VARCHAR(150),
+                        flow_version_id UUID,
+                        function_id UUID,
+                        function_key VARCHAR(255),
+                        function_version_id UUID,
                         status VARCHAR(100) not null,
                         input_payload JSONB,
                         dependency_snapshot JSONB,
@@ -348,14 +351,21 @@ class InvocationInspectionServiceTest {
     private void insertRawInvocation(
             UUID invocationId, String kindLiteral, UUID flowId, String flowKey, UUID flowVersionId, String dependencySnapshotJson
     ) {
+        boolean direct = InvocationKind.DIRECT_FUNCTION.name().equals(kindLiteral);
+        String flowColumns = direct ? "null, null, null" : "'%s', '%s', '%s'".formatted(flowId, flowKey, flowVersionId);
+        String functionColumns = direct
+                ? "'%s', '%s', '%s'".formatted(flowId, flowKey, flowVersionId)
+                : "null, null, null";
         try (
                 Connection connection = dataSource().getConnection();
                 Statement statement = connection.createStatement()
         ) {
             statement.execute("""
-                    insert into invocations (id, kind, flow_id, flow_key, flow_version_id, status, dependency_snapshot)
-                    values ('%s', '%s', '%s', '%s', '%s', 'PENDING', '%s'::jsonb)
-                    """.formatted(invocationId, kindLiteral, flowId, flowKey, flowVersionId, dependencySnapshotJson));
+                    insert into invocations
+                        (id, kind, flow_id, flow_key, flow_version_id, function_id, function_key, function_version_id,
+                         status, dependency_snapshot)
+                    values ('%s', '%s', %s, %s, 'PENDING', '%s'::jsonb)
+                    """.formatted(invocationId, kindLiteral, flowColumns, functionColumns, dependencySnapshotJson));
         } catch (Exception exception) {
             throw new IllegalStateException("Failed to insert raw invocation test data", exception);
         }

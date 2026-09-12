@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.funchole.backend.invocation.Invocation;
+import com.funchole.backend.invocation.InvocationKind;
 import com.funchole.backend.invocation.InvocationMessagingConfig;
 import com.funchole.backend.invocation.InvocationReadyEvent;
 import com.funchole.backend.invocation.InvocationRegistry;
@@ -116,6 +117,19 @@ public final class InvocationDispatcher {
         this.subscription = subscribe();
     }
 
+    /**
+     * Kind-aware identity label for logs: FLOW invocations carry Flow identity,
+     * DIRECT_FUNCTION invocations carry the explicit pinned function identity
+     * (their Flow columns are null by design).
+     */
+    private static String invocationIdentityLabel(Invocation invocation) {
+        return invocation.kind() == InvocationKind.DIRECT_FUNCTION
+                ? "kind=DIRECT_FUNCTION, functionKey=" + invocation.functionKey()
+                        + ", functionVersionId=" + invocation.functionVersionId()
+                : "kind=FLOW, flowKey=" + invocation.flowKey()
+                        + ", flowVersionId=" + invocation.flowVersionId();
+    }
+
     public boolean processNext(Duration timeout) {
         try {
             List<Message> messages = subscription.fetch(1, timeout);
@@ -157,9 +171,9 @@ public final class InvocationDispatcher {
 
         DispatchableStep dispatchableStep = executionPlanner.planInitialStep(invocation, snapshot);
         logger.info(
-                "Invocation planned: invocationId={}, flowKey={}, stepId={}, stepKey={}, position={}, componentType={}, componentId={}, componentVersionId={}",
+                "Invocation planned: invocationId={}, identity={}, stepId={}, stepKey={}, position={}, componentType={}, componentId={}, componentVersionId={}",
                 dispatchableStep.invocationId(),
-                invocation.flowKey(),
+                invocationIdentityLabel(invocation),
                 dispatchableStep.stepId(),
                 dispatchableStep.stepKey(),
                 dispatchableStep.position(),
@@ -389,10 +403,10 @@ public final class InvocationDispatcher {
                 return;
             }
             logger.info(
-                    "Flow progression stopped: no further step after position={} for invocationId={}, flowKey={}",
+                    "Flow progression stopped: no further step after position={} for invocationId={}, identity={}",
                     completedExecution.position(),
                     invocation.invocationId(),
-                    invocation.flowKey()
+                    invocationIdentityLabel(invocation)
             );
             return;
         }
@@ -527,7 +541,7 @@ public final class InvocationDispatcher {
         String errorMessage = "Unsupported component type '" + unsupportedComponentType
                 + "' at position following " + completedExecution.position()
                 + " for invocationId=" + invocation.invocationId()
-                + ", flowKey=" + invocation.flowKey();
+                + ", identity=" + invocationIdentityLabel(invocation);
         logger.info("Flow progression failed: {}", errorMessage);
         try {
             invocationRegistry.markFailed(invocation.invocationId(), serializeErrorAsJson(errorMessage));
