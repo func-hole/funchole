@@ -13,6 +13,7 @@ import com.funchole.backend.gateway.GatewayRuntimeEntry;
 import com.funchole.backend.gateway.flow.FlowResolution;
 import com.funchole.backend.gateway.flow.FlowResolver;
 import com.funchole.backend.invocation.CreateInvocationRequest;
+import com.funchole.backend.invocation.DirectInvocationRequest;
 import com.funchole.backend.invocation.Invocation;
 import com.funchole.backend.invocation.InvocationRegistry;
 import com.funchole.backend.invocation.InvocationStatus;
@@ -358,6 +359,11 @@ class GatewayHttpHandlerInvocationTest {
         volatile String createdOnThread;
         volatile String reconcileFindOnThread;
         volatile String terminalFindOnThread;
+
+        @Override
+        public Invocation createDirectInvocation(DirectInvocationRequest request) {
+            throw new UnsupportedOperationException("not used");
+        }
 
         @Override
         public Invocation create(CreateInvocationRequest request) {

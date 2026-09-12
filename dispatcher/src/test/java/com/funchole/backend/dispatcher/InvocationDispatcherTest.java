@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.funchole.backend.invocation.CreateInvocationRequest;
+import com.funchole.backend.invocation.DirectInvocationRequest;
 import com.funchole.backend.invocation.Invocation;
 import com.funchole.backend.invocation.InvocationMessagingConfig;
 import com.funchole.backend.invocation.InvocationRegistry;
@@ -1171,6 +1172,11 @@ class InvocationDispatcherTest {
     }
 
     private static final class MissingInvocationRegistry implements InvocationRegistry {
+
+        @Override
+        public Invocation createDirectInvocation(DirectInvocationRequest request) {
+            throw new UnsupportedOperationException("not used");
+        }
 
         @Override
         public Invocation create(CreateInvocationRequest request) {

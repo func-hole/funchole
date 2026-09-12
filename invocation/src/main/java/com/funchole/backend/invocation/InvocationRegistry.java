@@ -7,6 +7,15 @@ public interface InvocationRegistry {
 
     Invocation create(CreateInvocationRequest request);
 
+    /**
+     * Transport-neutral direct FunctionVersion invocation. The exact
+     * functionVersionId is pinned into the immutable snapshot up front; no
+     * Flow/route resolution or active/latest lookup happens on this path.
+     * Publishes the same INVOCATION_READY event so the existing Dispatcher
+     * / Runtime execution path picks the invocation up unchanged.
+     */
+    Invocation createDirectInvocation(DirectInvocationRequest request);
+
     Optional<Invocation> findById(UUID invocationId);
 
     /**

@@ -43,41 +43,117 @@ public final class JdbcInvocationRegistry implements InvocationRegistry {
         try (Connection connection = dataSource.getConnection()) {
             InvocationSnapshot snapshot = resolveSnapshot(connection, request);
             String dependencySnapshot = serializeSnapshot(snapshot);
-            Invocation invocation;
-
-            try (PreparedStatement statement = connection.prepareStatement("""
-                        insert into invocations (
-                            id,
-                            flow_id,
-                            flow_key,
-                            flow_version_id,
-                            status,
-                            input_payload,
-                            dependency_snapshot
-                        )
-                        values (?, ?, ?, ?, ?, ?, ?)
-                        returning
-                        """ + SELECT_COLUMNS)) {
-                statement.setObject(1, invocationId);
-                statement.setObject(2, request.flowId());
-                statement.setString(3, request.flowKey());
-                statement.setObject(4, request.flowVersionId());
-                statement.setString(5, InvocationStatus.PENDING.name());
-                statement.setObject(6, request.inputPayload(), Types.OTHER);
-                statement.setObject(7, dependencySnapshot, Types.OTHER);
-
-                try (ResultSet resultSet = statement.executeQuery()) {
-                    if (resultSet.next()) {
-                        invocation = toInvocation(resultSet);
-                    } else {
-                        throw new IllegalStateException("Invocation insert did not return a row");
-                    }
-                }
-            }
+            Invocation invocation = insertInvocation(
+                    connection,
+                    invocationId,
+                    request.flowId(),
+                    request.flowKey(),
+                    request.flowVersionId(),
+                    request.inputPayload(),
+                    dependencySnapshot
+            );
             eventPublisher.publishInvocationReady(invocation);
             return invocation;
         } catch (SQLException exception) {
             throw new IllegalStateException("Failed to create invocation", exception);
+        }
+    }
+
+    @Override
+    public Invocation createDirectInvocation(DirectInvocationRequest request) {
+        UUID invocationId = UUID.randomUUID();
+        try (Connection connection = dataSource.getConnection()) {
+            InvocationSnapshot snapshot = directInvocationSnapshot(request);
+            String dependencySnapshot = serializeSnapshot(snapshot);
+            Invocation invocation = insertInvocation(
+                    connection,
+                    invocationId,
+                    request.functionId(),
+                    request.functionKey(),
+                    request.functionVersionId(),
+                    request.inputPayload(),
+                    dependencySnapshot
+            );
+            eventPublisher.publishInvocationReady(invocation);
+            return invocation;
+        } catch (SQLException exception) {
+            throw new IllegalStateException("Failed to create direct invocation", exception);
+        }
+    }
+
+    /**
+     * Builds the immutable dependency snapshot for a direct FunctionVersion
+     * invocation WITHOUT any Flow-table resolution. This deliberately reuses
+     * the regular flow-shaped snapshot model (root flow + one ordered
+     * FUNCTION step): the Dispatcher, planner, and runtime execution path
+     * need no code changes, and the snapshot still proves exactly which
+     * componentVersionId (the pinned FunctionVersion.id) was executed.
+     */
+    private InvocationSnapshot directInvocationSnapshot(DirectInvocationRequest request) {
+        InvocationStepSnapshot invokeFunctionStep = new InvocationStepSnapshot(
+                UUID.randomUUID(),
+                "invoke-function",
+                "FUNCTION",
+                1,
+                request.functionId(),
+                request.functionVersionId(),
+                null
+        );
+        InvocationFlowSnapshot directFlow = new InvocationFlowSnapshot(
+                request.functionId(),
+                request.functionKey(),
+                request.functionVersionId(),
+                1,
+                "ADOPTED",
+                request.runtimeType(),
+                null,
+                List.of(invokeFunctionStep)
+        );
+        return new InvocationSnapshot(
+                request.functionId(),
+                request.functionKey(),
+                request.functionVersionId(),
+                List.of(directFlow)
+        );
+    }
+
+    private Invocation insertInvocation(
+            Connection connection,
+            UUID invocationId,
+            UUID flowId,
+            String flowKey,
+            UUID flowVersionId,
+            String inputPayload,
+            String dependencySnapshot
+    ) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                    insert into invocations (
+                        id,
+                        flow_id,
+                        flow_key,
+                        flow_version_id,
+                        status,
+                        input_payload,
+                        dependency_snapshot
+                    )
+                    values (?, ?, ?, ?, ?, ?, ?)
+                    returning id, flow_id, flow_key, flow_version_id, status, input_payload, dependency_snapshot,
+                        result, error, created_at, updated_at, completed_at
+                    """)) {
+            statement.setObject(1, invocationId);
+            statement.setObject(2, flowId);
+            statement.setString(3, flowKey);
+            statement.setObject(4, flowVersionId);
+            statement.setString(5, InvocationStatus.PENDING.name());
+            statement.setObject(6, inputPayload, Types.OTHER);
+            statement.setObject(7, dependencySnapshot, Types.OTHER);
+
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (resultSet.next()) {
+                    return toInvocation(resultSet);
+                }
+                throw new IllegalStateException("Invocation insert did not return a row");
+            }
         }
     }
 
