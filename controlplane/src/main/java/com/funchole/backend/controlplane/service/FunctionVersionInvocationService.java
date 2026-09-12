@@ -12,9 +12,11 @@ import org.springframework.transaction.annotation.Transactional;
  * FunctionVersion without a Gateway, Flow, or FlowRoute.
  *
  * <pre>
- * READY FunctionVersion -&gt; readiness validation (this class)
- *                        -&gt; exactly-pinned invocation hand-off (port)
- *                        -&gt; existing invocation / dispatcher / runtime path
+ * caller command (functionVersionId + payload only)
+ * -&gt; readiness validation (this class)
+ * -&gt; durable FunctionVersion resolution -&gt; pinned handoff spec (identity/runtime from durable state)
+ * -&gt; exactly-pinned invocation hand-off (port)
+ * -&gt; existing invocation / dispatcher / runtime path
  * </pre>
  *
  * Responsibilities kept deliberately small:
@@ -49,27 +51,28 @@ public class FunctionVersionInvocationService {
     }
 
     @Transactional(readOnly = true)
-    public DirectInvocationResult invoke(FunctionVersionInvocationSpec request) {
-        if (request == null || request.functionVersionId() == null) {
+    public DirectInvocationResult invoke(DirectFunctionInvocationCommand command) {
+        if (command == null || command.functionVersionId() == null) {
             throw new IllegalArgumentException("functionVersionId is required");
         }
-        FunctionVersion functionVersion = functionVersionRepository.findById(request.functionVersionId())
+        FunctionVersion functionVersion = functionVersionRepository.findById(command.functionVersionId())
                 .orElseThrow(() -> new ResourceNotFoundException(
-                        "Function version not found: " + request.functionVersionId()));
+                        "Function version not found: " + command.functionVersionId()));
         if (functionVersion.getStatus() != FunctionVersionStatus.READY) {
             throw new IllegalStateException("Only READY function versions can be invoked directly, current status is "
-                    + functionVersion.getStatus() + ": " + request.functionVersionId());
+                    + functionVersion.getStatus() + ": " + command.functionVersionId());
         }
 
         // The exact FunctionVersion is the pin: function identity, version id,
         // and runtime are copied from the durable FunctionVersion itself -
-        // never resolved from active/latest versions or Flow data.
+        // never resolved from active/latest versions or Flow data, and never
+        // taken from caller input.
         FunctionVersionInvocationSpec pinnedSpec = new FunctionVersionInvocationSpec(
                 functionVersion.getFunction().getId(),
                 functionVersion.getFunction().getFunctionKey(),
                 functionVersion.getId(),
                 functionVersion.getRuntime(),
-                request.inputPayload()
+                command.inputPayload()
         );
         return invocationHandoff.dispatch(pinnedSpec);
     }

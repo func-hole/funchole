@@ -3,15 +3,17 @@ package com.funchole.backend.controlplane.service;
 import java.util.UUID;
 
 /**
- * Exactly-pinned request for a direct FunctionVersion invocation, owned by
- * the control-plane boundary. The exact {@code functionVersionId} is
- * authoritative for the whole invocation - no active/latest resolution and
- * no Flow/FlowRoute lookups happen on this path.
+ * Exactly-pinned, internally RESOLVED handoff request for a direct
+ * FunctionVersion invocation. NOT caller input: every field here comes from
+ * the durable FunctionVersion that was validated READY by
+ * {@link FunctionVersionInvocationService} - callers can never supply or
+ * override function identity or runtime metadata.
  *
- * {@code runtimeType} is not selected by this control-plane side either; it
- * is copied verbatim from the invoked FunctionVersion so the existing
- * Dispatcher / Runtime Registry execution path performs the actual runtime
- * selection.
+ * The exact {@code functionVersionId} stays authoritative for the lifetime of
+ * the invocation - no active/latest resolution and no Flow/FlowRoute lookups
+ * ever happen on this path. {@code runtimeType} is copied verbatim from the
+ * FunctionVersion; the actual runtime decision still belongs to the existing
+ * Dispatcher / Runtime Registry execution path.
  */
 public record FunctionVersionInvocationSpec(
         UUID functionId,

@@ -13,6 +13,7 @@ import com.funchole.backend.controlplane.entity.SourceFile;
 import com.funchole.backend.controlplane.repository.AppUserRepository;
 import com.funchole.backend.controlplane.repository.FunctionRepository;
 import com.funchole.backend.controlplane.repository.FunctionVersionRepository;
+import com.funchole.backend.controlplane.service.DirectFunctionInvocationCommand;
 import com.funchole.backend.controlplane.service.DirectInvocationResult;
 import com.funchole.backend.controlplane.service.FunctionVersionArtifactRegistry;
 import com.funchole.backend.controlplane.service.FunctionVersionDeploymentFinalizer;
@@ -74,12 +75,7 @@ class FunctionVersionInvocationServiceTests {
         FunctionVersion functionVersion = readyFunctionVersion();
 
         DirectInvocationResult result = service(inMemoryHandoff)
-                .invoke(new FunctionVersionInvocationSpec(
-                        functionVersion.getFunction().getId(),
-                        functionVersion.getFunction().getFunctionKey(),
-                        functionVersion.getId(),
-                        functionVersion.getRuntime(),
-                        "{\"path\":\"/orders\"}"));
+                .invoke(new DirectFunctionInvocationCommand(functionVersion.getId(), "{\"path\":\"/orders\"}"));
 
         assertThat(result.invocationId()).isNotNull();
         assertThat(result.functionVersionId()).isEqualTo(functionVersion.getId());
@@ -91,12 +87,7 @@ class FunctionVersionInvocationServiceTests {
         FunctionVersion functionVersion = readyFunctionVersion();
 
         DirectInvocationResult result = service(recordingHandoff)
-                .invoke(new FunctionVersionInvocationSpec(
-                        functionVersion.getFunction().getId(),
-                        functionVersion.getFunction().getFunctionKey(),
-                        functionVersion.getId(),
-                        functionVersion.getRuntime(),
-                        "{}"));
+                .invoke(new DirectFunctionInvocationCommand(functionVersion.getId(), "{}"));
 
         FunctionVersionInvocationSpec handed = recordingHandoff.lastSpec();
         assertThat(handed.functionVersionId()).isEqualTo(functionVersion.getId());
@@ -142,12 +133,12 @@ class FunctionVersionInvocationServiceTests {
 
     @Test
     void missingFunctionVersionIsRejected() {
-        FunctionVersionInvocationSpec spec = new FunctionVersionInvocationSpec(
-                UUID.randomUUID(), "fn_missing", UUID.randomUUID(), "NODE", "{}");
+        UUID missingVersionId = UUID.randomUUID();
 
-        assertThatThrownBy(() -> service(inMemoryHandoff).invoke(spec))
+        assertThatThrownBy(() -> service(inMemoryHandoff)
+                .invoke(new DirectFunctionInvocationCommand(missingVersionId, "{}")))
                 .isInstanceOf(ResourceNotFoundException.class)
-                .hasMessageContaining(spec.functionVersionId().toString());
+                .hasMessageContaining(missingVersionId.toString());
 
         assertThat(recordingHandoff.invocations()).isZero();
     }
@@ -157,7 +148,7 @@ class FunctionVersionInvocationServiceTests {
         FunctionVersion functionVersion = readyFunctionVersion();
         String inputPayload = "{\"limit\":10,\"path\":\"/orders\"}";
 
-        service(recordingHandoff).invoke(specForWithPayload(functionVersion, inputPayload));
+        service(recordingHandoff).invoke(new DirectFunctionInvocationCommand(functionVersion.getId(), inputPayload));
 
         assertThat(recordingHandoff.lastSpec().inputPayload()).isEqualTo(inputPayload);
     }
@@ -166,7 +157,7 @@ class FunctionVersionInvocationServiceTests {
     void directInvocationPerformsNoFlowOrRouteResolution() {
         FunctionVersion functionVersion = readyFunctionVersion();
 
-        service(recordingHandoff).invoke(specForWithPayload(functionVersion, "{}"));
+        service(recordingHandoff).invoke(new DirectFunctionInvocationCommand(functionVersion.getId(), "{}"));
 
         // The handed spec carries only the FunctionVersion identity that was
         // supplied; no Flow ids, Flow versions, or routes exist anywhere on
@@ -182,7 +173,7 @@ class FunctionVersionInvocationServiceTests {
     void runtimeTypeIsCarriedFromTheFunctionVersionNotHardcoded() {
         FunctionVersion functionVersion = readyFunctionVersion();
 
-        service(recordingHandoff).invoke(specFor(functionVersion));
+        service(recordingHandoff).invoke(new DirectFunctionInvocationCommand(functionVersion.getId(), "{}"));
 
         assertThat(recordingHandoff.lastSpec().runtimeType()).isEqualTo(functionVersion.getRuntime());
     }
@@ -191,7 +182,7 @@ class FunctionVersionInvocationServiceTests {
     void dispatchFailurePropagatesAndDoesNotLeaveAStuckInvocation() {
         FunctionVersion functionVersion = readyFunctionVersion();
 
-        assertThatThrownBy(() -> service(throwingHandoff).invoke(specFor(functionVersion)))
+        assertThatThrownBy(() -> service(throwingHandoff).invoke(new DirectFunctionInvocationCommand(functionVersion.getId(), "{}")))
                 .isInstanceOf(FunctionVersionInvocationHandoff.FunctionVersionInvocationDispatchException.class)
                 .hasMessageContaining("simulated dispatch failure");
 
@@ -201,25 +192,11 @@ class FunctionVersionInvocationServiceTests {
     }
 
     private DirectInvocationResult invokeDirect(FunctionVersion functionVersion) {
-        return service(inMemoryHandoff).invoke(specFor(functionVersion));
+        return service(inMemoryHandoff).invoke(commandFor(functionVersion));
     }
 
-    private FunctionVersionInvocationSpec specFor(FunctionVersion functionVersion) {
-        return new FunctionVersionInvocationSpec(
-                functionVersion.getFunction().getId(),
-                functionVersion.getFunction().getFunctionKey(),
-                functionVersion.getId(),
-                functionVersion.getRuntime(),
-                "{}");
-    }
-
-    private FunctionVersionInvocationSpec specForWithPayload(FunctionVersion functionVersion, String inputPayload) {
-        return new FunctionVersionInvocationSpec(
-                functionVersion.getFunction().getId(),
-                functionVersion.getFunction().getFunctionKey(),
-                functionVersion.getId(),
-                functionVersion.getRuntime(),
-                inputPayload);
+    private DirectFunctionInvocationCommand commandFor(FunctionVersion functionVersion) {
+        return new DirectFunctionInvocationCommand(functionVersion.getId(), "{}");
     }
 
     private FunctionVersionInvocationService service(FunctionVersionInvocationHandoff handoff) {
