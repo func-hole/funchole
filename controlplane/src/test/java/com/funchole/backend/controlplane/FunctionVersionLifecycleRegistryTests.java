@@ -9,12 +9,17 @@ import com.funchole.backend.controlplane.constant.FunctionVersionStatus;
 import com.funchole.backend.controlplane.entity.AppUser;
 import com.funchole.backend.controlplane.entity.Function;
 import com.funchole.backend.controlplane.entity.FunctionVersion;
+import com.funchole.backend.controlplane.entity.SourceBundle;
+import com.funchole.backend.controlplane.entity.SourceFile;
+import com.funchole.backend.controlplane.functionbuild.BuildWorkspaceService;
+import com.funchole.backend.controlplane.functionbuild.RuntimeBuilderRegistry;
 import com.funchole.backend.controlplane.repository.AppUserRepository;
 import com.funchole.backend.controlplane.repository.FunctionRepository;
 import com.funchole.backend.controlplane.repository.FunctionVersionRepository;
 import com.funchole.backend.controlplane.service.FunctionVersionArtifactRegistry;
 import com.funchole.backend.controlplane.service.FunctionVersionDeploymentService;
 import com.funchole.backend.controlplane.service.FunctionVersionLifecycleRegistry;
+import com.funchole.backend.controlplane.service.FunctionVersionSourceService;
 import com.funchole.backend.core.base.exception.ResourceNotFoundException;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -29,7 +34,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
@@ -62,9 +66,6 @@ class FunctionVersionLifecycleRegistryTests {
             .withUsername("test")
             .withPassword("test");
 
-    @TempDir
-    Path tempDir;
-
     @Autowired
     private AppUserRepository appUserRepository;
 
@@ -73,6 +74,15 @@ class FunctionVersionLifecycleRegistryTests {
 
     @Autowired
     private FunctionVersionRepository functionVersionRepository;
+
+    @Autowired
+    private FunctionVersionSourceService sourceService;
+
+    @Autowired
+    private BuildWorkspaceService buildWorkspaceService;
+
+    @Autowired
+    private RuntimeBuilderRegistry runtimeBuilderRegistry;
 
     @Autowired
     private FunctionVersionArtifactRegistry artifactRegistry;
@@ -184,14 +194,14 @@ class FunctionVersionLifecycleRegistryTests {
         String objectKey = FunctionVersionArtifactRegistry.artifactObjectKey(functionVersionId);
         CountingArtifactPublisher publisher = new CountingArtifactPublisher(
                 new PublishedArtifact(functionVersionId, objectKey, SHA256_A, SIZE_A));
-        FunctionVersionDeploymentService service =
-                new FunctionVersionDeploymentService(publisher, artifactRegistry, lifecycleRegistry);
+        FunctionVersionDeploymentService service = new FunctionVersionDeploymentService(
+                buildWorkspaceService, runtimeBuilderRegistry, publisher, artifactRegistry, lifecycleRegistry);
         CountDownLatch ready = new CountDownLatch(2);
         CountDownLatch start = new CountDownLatch(1);
         Callable<FunctionVersion> attempt = () -> {
             ready.countDown();
             start.await(5, TimeUnit.SECONDS);
-            return service.deployArtifact(functionVersionId, tempDir);
+            return service.deploy(functionVersionId);
         };
 
         try (var executor = Executors.newFixedThreadPool(2)) {
@@ -230,7 +240,10 @@ class FunctionVersionLifecycleRegistryTests {
                 "NODE"
         ));
         createdFunctionIds.add(function.getId());
-        return functionVersionRepository.save(FunctionVersion.create(function, 1, "NODE", null));
+        FunctionVersion functionVersion = functionVersionRepository.save(FunctionVersion.create(function, 1, "NODE", null));
+        sourceService.submitSource(functionVersion.getId(), new SourceBundle(
+                "NODE", "20", "index.js", List.of(new SourceFile("index.js", "console.log('hi')"))));
+        return functionVersion;
     }
 
     private static final class CountingArtifactPublisher implements ArtifactPublisher {

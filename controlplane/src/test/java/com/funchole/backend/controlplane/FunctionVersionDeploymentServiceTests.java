@@ -9,19 +9,31 @@ import com.funchole.backend.controlplane.constant.FunctionVersionStatus;
 import com.funchole.backend.controlplane.entity.AppUser;
 import com.funchole.backend.controlplane.entity.Function;
 import com.funchole.backend.controlplane.entity.FunctionVersion;
+import com.funchole.backend.controlplane.entity.SourceBundle;
+import com.funchole.backend.controlplane.entity.SourceFile;
+import com.funchole.backend.controlplane.functionbuild.BuildWorkspace;
+import com.funchole.backend.controlplane.functionbuild.BuildWorkspaceService;
+import com.funchole.backend.controlplane.functionbuild.PreparedArtifact;
+import com.funchole.backend.controlplane.functionbuild.RuntimeBuilder;
+import com.funchole.backend.controlplane.functionbuild.RuntimeBuilderRegistry;
 import com.funchole.backend.controlplane.repository.AppUserRepository;
 import com.funchole.backend.controlplane.repository.FunctionRepository;
 import com.funchole.backend.controlplane.repository.FunctionVersionRepository;
 import com.funchole.backend.controlplane.service.FunctionVersionArtifactRegistry;
 import com.funchole.backend.controlplane.service.FunctionVersionDeploymentService;
 import com.funchole.backend.controlplane.service.FunctionVersionLifecycleRegistry;
+import com.funchole.backend.controlplane.service.FunctionVersionSourceService;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
@@ -47,9 +59,6 @@ class FunctionVersionDeploymentServiceTests {
             .withUsername("test")
             .withPassword("test");
 
-    @TempDir
-    Path tempDir;
-
     @Autowired
     private AppUserRepository appUserRepository;
 
@@ -58,6 +67,12 @@ class FunctionVersionDeploymentServiceTests {
 
     @Autowired
     private FunctionVersionRepository functionVersionRepository;
+
+    @Autowired
+    private FunctionVersionSourceService sourceService;
+
+    @Autowired
+    private BuildWorkspaceService buildWorkspaceService;
 
     @Autowired
     private FunctionVersionArtifactRegistry artifactRegistry;
@@ -81,9 +96,8 @@ class FunctionVersionDeploymentServiceTests {
         RecordingArtifactPublisher publisher = RecordingArtifactPublisher.capturingStatusAndReturning(
                 () -> functionVersionRepository.findById(functionVersion.getId()).orElseThrow().getStatus(),
                 new PublishedArtifact(functionVersion.getId(), objectKey, SHA256_A, SIZE_A));
-        FunctionVersionDeploymentService service = service(publisher);
 
-        service.deployArtifact(functionVersion.getId(), tempDir);
+        service(publisher).deploy(functionVersion.getId());
 
         assertThat(publisher.statusDuringPublish()).isEqualTo(FunctionVersionStatus.PUBLISHING);
     }
@@ -94,9 +108,8 @@ class FunctionVersionDeploymentServiceTests {
         String objectKey = FunctionVersionArtifactRegistry.artifactObjectKey(functionVersion.getId());
         RecordingArtifactPublisher publisher = RecordingArtifactPublisher.returning(
                 new PublishedArtifact(functionVersion.getId(), objectKey, SHA256_A, SIZE_A));
-        FunctionVersionDeploymentService service = service(publisher);
 
-        FunctionVersion deployed = service.deployArtifact(functionVersion.getId(), tempDir);
+        FunctionVersion deployed = service(publisher).deploy(functionVersion.getId());
 
         assertThat(publisher.invocationCount()).isEqualTo(1);
         assertThat(deployed.getStatus()).isEqualTo(FunctionVersionStatus.READY);
@@ -117,9 +130,8 @@ class FunctionVersionDeploymentServiceTests {
         long size = 777L;
         RecordingArtifactPublisher publisher = RecordingArtifactPublisher.returning(
                 new PublishedArtifact(functionVersion.getId(), objectKey, sha256, size));
-        FunctionVersionDeploymentService service = service(publisher);
 
-        service.deployArtifact(functionVersion.getId(), tempDir);
+        service(publisher).deploy(functionVersion.getId());
 
         FunctionVersion retrieved = functionVersionRepository.findById(functionVersion.getId()).orElseThrow();
         assertThat(retrieved.getArtifactObjectKey()).isEqualTo(objectKey);
@@ -132,9 +144,8 @@ class FunctionVersionDeploymentServiceTests {
         FunctionVersion functionVersion = createFunctionVersion();
         RecordingArtifactPublisher publisher = RecordingArtifactPublisher.throwing(
                 new IllegalStateException("simulated upload failure"));
-        FunctionVersionDeploymentService service = service(publisher);
 
-        assertThatThrownBy(() -> service.deployArtifact(functionVersion.getId(), tempDir))
+        assertThatThrownBy(() -> service(publisher).deploy(functionVersion.getId()))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("simulated upload failure");
 
@@ -151,9 +162,8 @@ class FunctionVersionDeploymentServiceTests {
         // itself reject the write - a registration/persistence failure, not a publish failure.
         RecordingArtifactPublisher publisher = RecordingArtifactPublisher.returning(
                 new PublishedArtifact(functionVersion.getId(), objectKey, "not-a-valid-sha256", SIZE_A));
-        FunctionVersionDeploymentService service = service(publisher);
 
-        assertThatThrownBy(() -> service.deployArtifact(functionVersion.getId(), tempDir))
+        assertThatThrownBy(() -> service(publisher).deploy(functionVersion.getId()))
                 .isInstanceOf(IllegalArgumentException.class);
 
         FunctionVersion retrieved = functionVersionRepository.findById(functionVersion.getId()).orElseThrow();
@@ -169,9 +179,8 @@ class FunctionVersionDeploymentServiceTests {
         // service's own markFailed(...) call (which requires PUBLISHING) fails too.
         RecordingArtifactPublisher publisher = RecordingArtifactPublisher.throwingAfter(
                 () -> lifecycleRegistry.markReady(functionVersion.getId()), originalFailure);
-        FunctionVersionDeploymentService service = service(publisher);
 
-        assertThatThrownBy(() -> service.deployArtifact(functionVersion.getId(), tempDir))
+        assertThatThrownBy(() -> service(publisher).deploy(functionVersion.getId()))
                 .isSameAs(originalFailure)
                 .satisfies(thrown -> {
                     assertThat(thrown.getSuppressed()).hasSize(1);
@@ -186,12 +195,15 @@ class FunctionVersionDeploymentServiceTests {
         FunctionVersion functionVersion = createFunctionVersion();
         String objectKey = FunctionVersionArtifactRegistry.artifactObjectKey(functionVersion.getId());
         service(RecordingArtifactPublisher.returning(new PublishedArtifact(functionVersion.getId(), objectKey, SHA256_A, SIZE_A)))
-                .deployArtifact(functionVersion.getId(), tempDir);
+                .deploy(functionVersion.getId());
         RecordingArtifactPublisher secondAttemptPublisher = RecordingArtifactPublisher.returning(null);
+        RecordingRuntimeBuilder secondAttemptBuilder = RecordingRuntimeBuilder.supporting("NODE");
 
-        assertThatThrownBy(() -> service(secondAttemptPublisher).deployArtifact(functionVersion.getId(), tempDir))
+        assertThatThrownBy(() -> service(secondAttemptPublisher, secondAttemptBuilder).deploy(functionVersion.getId()))
                 .isInstanceOf(IllegalStateException.class);
 
+        // Rejected before build or publish is ever attempted.
+        assertThat(secondAttemptBuilder.invocationCount()).isZero();
         assertThat(secondAttemptPublisher.invocationCount()).isZero();
         assertThat(functionVersionRepository.findById(functionVersion.getId()).orElseThrow().getStatus())
                 .isEqualTo(FunctionVersionStatus.READY);
@@ -203,7 +215,7 @@ class FunctionVersionDeploymentServiceTests {
         lifecycleRegistry.beginPublishing(functionVersion.getId());
         RecordingArtifactPublisher publisher = RecordingArtifactPublisher.returning(null);
 
-        assertThatThrownBy(() -> service(publisher).deployArtifact(functionVersion.getId(), tempDir))
+        assertThatThrownBy(() -> service(publisher).deploy(functionVersion.getId()))
                 .isInstanceOf(IllegalStateException.class);
 
         assertThat(publisher.invocationCount()).isZero();
@@ -216,11 +228,11 @@ class FunctionVersionDeploymentServiceTests {
         FunctionVersion functionVersion = createFunctionVersion();
         String objectKey = FunctionVersionArtifactRegistry.artifactObjectKey(functionVersion.getId());
         service(RecordingArtifactPublisher.returning(new PublishedArtifact(functionVersion.getId(), objectKey, SHA256_A, SIZE_A)))
-                .deployArtifact(functionVersion.getId(), tempDir);
+                .deploy(functionVersion.getId());
 
         assertThatThrownBy(() -> service(RecordingArtifactPublisher.returning(
                 new PublishedArtifact(functionVersion.getId(), objectKey, "b".repeat(64), 2048L)))
-                .deployArtifact(functionVersion.getId(), tempDir))
+                .deploy(functionVersion.getId()))
                 .isInstanceOf(IllegalStateException.class);
 
         FunctionVersion retrieved = functionVersionRepository.findById(functionVersion.getId()).orElseThrow();
@@ -238,9 +250,8 @@ class FunctionVersionDeploymentServiceTests {
                 SHA256_A,
                 SIZE_A
         ));
-        FunctionVersionDeploymentService service = service(publisher);
 
-        assertThatThrownBy(() -> service.deployArtifact(functionVersion.getId(), tempDir))
+        assertThatThrownBy(() -> service(publisher).deploy(functionVersion.getId()))
                 .isInstanceOf(IllegalStateException.class);
 
         FunctionVersion retrieved = functionVersionRepository.findById(functionVersion.getId()).orElseThrow();
@@ -253,12 +264,11 @@ class FunctionVersionDeploymentServiceTests {
         FunctionVersion versionOne = createFunctionVersion();
         FunctionVersion versionTwo = createFunctionVersion();
         String objectKeyOne = FunctionVersionArtifactRegistry.artifactObjectKey(versionOne.getId());
-        String objectKeyTwo = FunctionVersionArtifactRegistry.artifactObjectKey(versionTwo.getId());
 
         service(RecordingArtifactPublisher.returning(new PublishedArtifact(versionOne.getId(), objectKeyOne, SHA256_A, SIZE_A)))
-                .deployArtifact(versionOne.getId(), tempDir);
+                .deploy(versionOne.getId());
         assertThatThrownBy(() -> service(RecordingArtifactPublisher.throwing(new IllegalStateException("boom")))
-                .deployArtifact(versionTwo.getId(), tempDir))
+                .deploy(versionTwo.getId()))
                 .isInstanceOf(IllegalStateException.class);
 
         assertThat(functionVersionRepository.findById(versionOne.getId()).orElseThrow().getStatus())
@@ -271,20 +281,159 @@ class FunctionVersionDeploymentServiceTests {
                 .isEmpty();
     }
 
+    @Test
+    void buildWorkspaceIsCreatedFromTheExactFunctionVersionSource() {
+        FunctionVersion functionVersion = createFunctionVersion();
+        sourceService.submitSource(functionVersion.getId(), new SourceBundle("NODE", "20", "src/index.js", List.of(
+                new SourceFile("src/index.js", "entry"),
+                new SourceFile("lib/util.js", "util")
+        )));
+        RecordingRuntimeBuilder builder = RecordingRuntimeBuilder.supporting("NODE");
+        RecordingArtifactPublisher publisher = RecordingArtifactPublisher.returning(new PublishedArtifact(
+                functionVersion.getId(), FunctionVersionArtifactRegistry.artifactObjectKey(functionVersion.getId()), SHA256_A, SIZE_A));
+
+        service(publisher, builder).deploy(functionVersion.getId());
+
+        assertThat(builder.capturedFiles()).containsExactlyInAnyOrderEntriesOf(Map.of(
+                "src/index.js", "entry",
+                "lib/util.js", "util"
+        ));
+        assertThat(builder.capturedEntrypoint()).isEqualTo("src/index.js");
+        assertThat(builder.capturedRuntimeType()).isEqualTo("NODE");
+        assertThat(builder.capturedRuntimeVersion()).isEqualTo("20");
+    }
+
+    @Test
+    void correctRuntimeBuilderIsSelectedByFunctionVersionRuntime() {
+        FunctionVersion functionVersion = createFunctionVersion();
+        RecordingRuntimeBuilder nodeBuilder = RecordingRuntimeBuilder.supporting("NODE");
+        RecordingRuntimeBuilder otherBuilder = RecordingRuntimeBuilder.supporting("OTHER");
+        RuntimeBuilderRegistry registry = new RuntimeBuilderRegistry(List.of(otherBuilder, nodeBuilder));
+        RecordingArtifactPublisher publisher = RecordingArtifactPublisher.returning(new PublishedArtifact(
+                functionVersion.getId(), FunctionVersionArtifactRegistry.artifactObjectKey(functionVersion.getId()), SHA256_A, SIZE_A));
+        FunctionVersionDeploymentService service = new FunctionVersionDeploymentService(
+                buildWorkspaceService, registry, publisher, artifactRegistry, lifecycleRegistry);
+
+        service.deploy(functionVersion.getId());
+
+        assertThat(nodeBuilder.invocationCount()).isEqualTo(1);
+        assertThat(otherBuilder.invocationCount()).isZero();
+    }
+
+    @Test
+    void preparedArtifactIsPassedToArtifactPublisher() {
+        FunctionVersion functionVersion = createFunctionVersion();
+        RecordingRuntimeBuilder builder = RecordingRuntimeBuilder.supporting("NODE");
+        RecordingArtifactPublisher publisher = RecordingArtifactPublisher.returning(new PublishedArtifact(
+                functionVersion.getId(), FunctionVersionArtifactRegistry.artifactObjectKey(functionVersion.getId()), SHA256_A, SIZE_A));
+
+        service(publisher, builder).deploy(functionVersion.getId());
+
+        assertThat(publisher.capturedArtifactDirectory()).isEqualTo(builder.lastArtifactDirectory());
+    }
+
+    @Test
+    void workspaceIsCleanedAfterSuccess() {
+        FunctionVersion functionVersion = createFunctionVersion();
+        RecordingRuntimeBuilder builder = RecordingRuntimeBuilder.supporting("NODE");
+        RecordingArtifactPublisher publisher = RecordingArtifactPublisher.returning(new PublishedArtifact(
+                functionVersion.getId(), FunctionVersionArtifactRegistry.artifactObjectKey(functionVersion.getId()), SHA256_A, SIZE_A));
+
+        service(publisher, builder).deploy(functionVersion.getId());
+
+        assertThat(Files.exists(builder.receivedWorkspaces().get(0).root())).isFalse();
+    }
+
+    @Test
+    void preparedArtifactIsCleanedAfterSuccess() {
+        FunctionVersion functionVersion = createFunctionVersion();
+        RecordingRuntimeBuilder builder = RecordingRuntimeBuilder.supporting("NODE");
+        RecordingArtifactPublisher publisher = RecordingArtifactPublisher.returning(new PublishedArtifact(
+                functionVersion.getId(), FunctionVersionArtifactRegistry.artifactObjectKey(functionVersion.getId()), SHA256_A, SIZE_A));
+
+        service(publisher, builder).deploy(functionVersion.getId());
+
+        assertThat(Files.exists(builder.lastArtifactDirectory())).isFalse();
+    }
+
+    @Test
+    void buildFailureResultsInFailedAndPublisherIsNeverCalled() {
+        FunctionVersion functionVersion = createFunctionVersion();
+        RecordingRuntimeBuilder failingBuilder =
+                RecordingRuntimeBuilder.throwing("NODE", new IllegalStateException("simulated build failure"));
+        RecordingArtifactPublisher publisher = RecordingArtifactPublisher.returning(null);
+
+        assertThatThrownBy(() -> service(publisher, failingBuilder).deploy(functionVersion.getId()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("simulated build failure");
+
+        assertThat(publisher.invocationCount()).isZero();
+        assertThat(functionVersionRepository.findById(functionVersion.getId()).orElseThrow().getStatus())
+                .isEqualTo(FunctionVersionStatus.FAILED);
+        // The workspace materialized before the failing build call must still be cleaned up.
+        assertThat(failingBuilder.receivedWorkspaces()).hasSize(1);
+        assertThat(Files.exists(failingBuilder.receivedWorkspaces().get(0).root())).isFalse();
+    }
+
+    @Test
+    void cleanupHappensWhenPublisherFailsAfterASuccessfulBuild() {
+        FunctionVersion functionVersion = createFunctionVersion();
+        RecordingRuntimeBuilder builder = RecordingRuntimeBuilder.supporting("NODE");
+        RecordingArtifactPublisher publisher = RecordingArtifactPublisher.throwing(
+                new IllegalStateException("simulated upload failure"));
+
+        assertThatThrownBy(() -> service(publisher, builder).deploy(functionVersion.getId()))
+                .isInstanceOf(IllegalStateException.class);
+
+        assertThat(Files.exists(builder.receivedWorkspaces().get(0).root())).isFalse();
+        assertThat(Files.exists(builder.lastArtifactDirectory())).isFalse();
+        assertThat(functionVersionRepository.findById(functionVersion.getId()).orElseThrow().getStatus())
+                .isEqualTo(FunctionVersionStatus.FAILED);
+    }
+
+    @Test
+    void unsupportedRuntimeResultsInFailed() {
+        FunctionVersion functionVersion = createFunctionVersion("COBOL");
+        RuntimeBuilderRegistry registry = new RuntimeBuilderRegistry(List.of(RecordingRuntimeBuilder.supporting("NODE")));
+        RecordingArtifactPublisher publisher = RecordingArtifactPublisher.returning(null);
+        FunctionVersionDeploymentService service = new FunctionVersionDeploymentService(
+                buildWorkspaceService, registry, publisher, artifactRegistry, lifecycleRegistry);
+
+        assertThatThrownBy(() -> service.deploy(functionVersion.getId()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("COBOL");
+
+        assertThat(publisher.invocationCount()).isZero();
+        assertThat(functionVersionRepository.findById(functionVersion.getId()).orElseThrow().getStatus())
+                .isEqualTo(FunctionVersionStatus.FAILED);
+    }
+
     private FunctionVersionDeploymentService service(ArtifactPublisher publisher) {
-        return new FunctionVersionDeploymentService(publisher, artifactRegistry, lifecycleRegistry);
+        return service(publisher, RecordingRuntimeBuilder.supporting("NODE"));
+    }
+
+    private FunctionVersionDeploymentService service(ArtifactPublisher publisher, RuntimeBuilder runtimeBuilder) {
+        return new FunctionVersionDeploymentService(
+                buildWorkspaceService, new RuntimeBuilderRegistry(List.of(runtimeBuilder)), publisher, artifactRegistry, lifecycleRegistry);
     }
 
     private FunctionVersion createFunctionVersion() {
+        return createFunctionVersion("NODE");
+    }
+
+    private FunctionVersion createFunctionVersion(String runtime) {
         AppUser admin = appUserRepository.findByUsername("admin").orElseThrow();
         Function function = functionRepository.save(Function.create(
                 admin,
                 "fn_test_" + UUID.randomUUID().toString().replace("-", ""),
                 "Test Function",
                 "created by FunctionVersionDeploymentServiceTests",
-                "NODE"
+                runtime
         ));
-        return functionVersionRepository.save(FunctionVersion.create(function, 1, "NODE", null));
+        FunctionVersion functionVersion = functionVersionRepository.save(FunctionVersion.create(function, 1, runtime, null));
+        sourceService.submitSource(functionVersion.getId(), new SourceBundle(
+                runtime, "1", "index.js", List.of(new SourceFile("index.js", "console.log('hi')"))));
+        return functionVersion;
     }
 
     private static final class RecordingArtifactPublisher implements ArtifactPublisher {
@@ -294,6 +443,7 @@ class FunctionVersionDeploymentServiceTests {
         private final Runnable beforeThrow;
         private final List<UUID> invocations = new ArrayList<>();
         private FunctionVersionStatus capturedStatus;
+        private Path capturedArtifactDirectory;
 
         private RecordingArtifactPublisher(
                 PublishedArtifact result, RuntimeException failure, Supplier<FunctionVersionStatus> statusCapture, Runnable beforeThrow) {
@@ -322,6 +472,7 @@ class FunctionVersionDeploymentServiceTests {
         @Override
         public PublishedArtifact publish(UUID componentVersionId, Path preparedArtifactDirectory) {
             invocations.add(componentVersionId);
+            capturedArtifactDirectory = preparedArtifactDirectory;
             if (statusCapture != null) {
                 capturedStatus = statusCapture.get();
             }
@@ -340,6 +491,113 @@ class FunctionVersionDeploymentServiceTests {
 
         FunctionVersionStatus statusDuringPublish() {
             return capturedStatus;
+        }
+
+        Path capturedArtifactDirectory() {
+            return capturedArtifactDirectory;
+        }
+    }
+
+    /**
+     * Records what {@link BuildWorkspace} it received and produces its own
+     * fresh, real temporary artifact directory - distinct from the
+     * workspace's - so cleanup-ownership tests can inspect both
+     * independently after {@code deploy} returns.
+     */
+    private static final class RecordingRuntimeBuilder implements RuntimeBuilder {
+        private final String runtimeType;
+        private final RuntimeException failure;
+        private final List<BuildWorkspace> receivedWorkspaces = new ArrayList<>();
+        private Path artifactDirectory;
+        private Map<String, String> capturedFiles;
+        private String capturedEntrypoint;
+        private String capturedRuntimeType;
+        private String capturedRuntimeVersion;
+
+        private RecordingRuntimeBuilder(String runtimeType, RuntimeException failure) {
+            this.runtimeType = runtimeType;
+            this.failure = failure;
+        }
+
+        static RecordingRuntimeBuilder supporting(String runtimeType) {
+            return new RecordingRuntimeBuilder(runtimeType, null);
+        }
+
+        static RecordingRuntimeBuilder throwing(String runtimeType, RuntimeException failure) {
+            return new RecordingRuntimeBuilder(runtimeType, failure);
+        }
+
+        @Override
+        public boolean supports(String candidateRuntimeType) {
+            return runtimeType.equalsIgnoreCase(candidateRuntimeType);
+        }
+
+        @Override
+        public PreparedArtifact build(BuildWorkspace workspace) {
+            receivedWorkspaces.add(workspace);
+            // Captured up front - the workspace is closed by the caller as
+            // soon as this method returns (or throws), so its content is not
+            // safe to inspect afterward.
+            capturedEntrypoint = workspace.entrypoint();
+            capturedRuntimeType = workspace.runtimeType();
+            capturedRuntimeVersion = workspace.runtimeVersion();
+            capturedFiles = snapshotFiles(workspace.root());
+
+            if (failure != null) {
+                throw failure;
+            }
+
+            try {
+                artifactDirectory = Files.createTempDirectory("test-prepared-artifact-");
+                Path entrypointPath = artifactDirectory.resolve(workspace.entrypoint());
+                Files.createDirectories(entrypointPath.getParent());
+                Files.writeString(entrypointPath, "prepared");
+            } catch (IOException exception) {
+                throw new UncheckedIOException(exception);
+            }
+            return new PreparedArtifact(
+                    workspace.functionVersionId(), artifactDirectory, workspace.entrypoint(),
+                    workspace.runtimeType(), workspace.runtimeVersion());
+        }
+
+        private Map<String, String> snapshotFiles(Path root) {
+            try (var paths = Files.walk(root)) {
+                Map<String, String> snapshot = new LinkedHashMap<>();
+                for (Path path : paths.filter(Files::isRegularFile).toList()) {
+                    snapshot.put(root.relativize(path).toString(), Files.readString(path));
+                }
+                return snapshot;
+            } catch (IOException exception) {
+                throw new UncheckedIOException(exception);
+            }
+        }
+
+        int invocationCount() {
+            return receivedWorkspaces.size();
+        }
+
+        List<BuildWorkspace> receivedWorkspaces() {
+            return receivedWorkspaces;
+        }
+
+        Path lastArtifactDirectory() {
+            return artifactDirectory;
+        }
+
+        Map<String, String> capturedFiles() {
+            return capturedFiles;
+        }
+
+        String capturedEntrypoint() {
+            return capturedEntrypoint;
+        }
+
+        String capturedRuntimeType() {
+            return capturedRuntimeType;
+        }
+
+        String capturedRuntimeVersion() {
+            return capturedRuntimeVersion;
         }
     }
 }
