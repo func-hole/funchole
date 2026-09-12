@@ -1,4 +1,4 @@
-package com.funchole.backend.controlplane.nodebuild;
+package com.funchole.backend.controlplane.functionbuild;
 
 import com.funchole.backend.controlplane.constant.FunctionVersionStatus;
 import com.funchole.backend.controlplane.entity.FunctionVersion;
@@ -17,12 +17,14 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Transport-neutral application service that materializes an exact
- * FunctionVersion's already-submitted source into an isolated temporary
- * {@link NodeBuildWorkspace}, ready for a future build step (dependency
- * install, bundling, packaging - none of which happen here). Depends only on
- * a repository and {@link FunctionVersionSourceService} - no HTTP, MCP, CLI,
- * or UI type ever appears in its signatures.
+ * Transport-neutral, runtime-neutral application service that materializes
+ * an exact FunctionVersion's already-submitted source into an isolated
+ * temporary {@link BuildWorkspace}. What happens to that workspace next
+ * (dependency install, bundling, packaging) is entirely up to whichever
+ * {@link RuntimeBuilder} the caller resolves for the version's runtime type -
+ * this service knows nothing about Node, Python, Go, or any other runtime.
+ * Depends only on a repository and {@link FunctionVersionSourceService} - no
+ * HTTP, MCP, CLI, or UI type ever appears in its signatures.
  *
  * <p>Building is only allowed while the FunctionVersion is PUBLISHING: that
  * is exactly the window in which {@link FunctionVersionSourceService}
@@ -31,14 +33,14 @@ import org.springframework.transaction.annotation.Transactional;
  * extra locking here.
  */
 @Service
-public class NodeBuildWorkspaceService {
+public class BuildWorkspaceService {
 
     private static final String WORKSPACE_DIRECTORY_PREFIX = "funchole-build-";
 
     private final FunctionVersionRepository functionVersionRepository;
     private final FunctionVersionSourceService sourceService;
 
-    public NodeBuildWorkspaceService(
+    public BuildWorkspaceService(
             FunctionVersionRepository functionVersionRepository,
             FunctionVersionSourceService sourceService
     ) {
@@ -47,7 +49,7 @@ public class NodeBuildWorkspaceService {
     }
 
     @Transactional(readOnly = true)
-    public NodeBuildWorkspace prepareWorkspace(UUID functionVersionId) {
+    public BuildWorkspace prepareWorkspace(UUID functionVersionId) {
         if (functionVersionId == null) {
             throw new IllegalArgumentException("functionVersionId is required");
         }
@@ -78,7 +80,7 @@ public class NodeBuildWorkspaceService {
      * through the real submission path (it is already rejected at
      * {@code FunctionVersionSourceService.submitSource} time).
      */
-    NodeBuildWorkspace materialize(UUID functionVersionId, SourceBundle sourceBundle) {
+    BuildWorkspace materialize(UUID functionVersionId, SourceBundle sourceBundle) {
         Path workspaceRoot = createWorkspaceDirectory(functionVersionId);
         try {
             for (SourceFile file : sourceBundle.files()) {
@@ -89,7 +91,7 @@ public class NodeBuildWorkspaceService {
                 throw new IllegalStateException(
                         "Configured entrypoint was not found in the materialized workspace: " + sourceBundle.entrypoint());
             }
-            return new NodeBuildWorkspace(
+            return new BuildWorkspace(
                     functionVersionId,
                     workspaceRoot,
                     sourceBundle.entrypoint(),

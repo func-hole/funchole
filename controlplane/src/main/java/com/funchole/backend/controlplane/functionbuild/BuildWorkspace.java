@@ -1,4 +1,4 @@
-package com.funchole.backend.controlplane.nodebuild;
+package com.funchole.backend.controlplane.functionbuild;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -8,13 +8,18 @@ import java.util.UUID;
 
 /**
  * A FunctionVersion's submitted source, materialized onto local disk under
- * an isolated temporary directory, ready for the next build step to act on.
- * The caller owns this directory from the moment
- * {@link NodeBuildWorkspaceService#prepareWorkspace} returns it and must
+ * an isolated temporary directory, ready for a {@link RuntimeBuilder} to act
+ * on. Runtime-neutral by design: it carries only the information any runtime
+ * needs to start a build (workspace root, entrypoint, runtime type/version) -
+ * no Node/Python/Go/Rust-specific concept belongs here; that lives entirely
+ * behind the {@link RuntimeBuilder} the workspace is handed to.
+ *
+ * <p>The caller owns this directory from the moment
+ * {@link BuildWorkspaceService#prepareWorkspace} returns it and must
  * {@link #close()} it when done - use try-with-resources, mirroring
  * {@code artifact.RemoteArtifact}'s temporary-directory ownership contract.
  */
-public final class NodeBuildWorkspace implements AutoCloseable {
+public final class BuildWorkspace implements AutoCloseable {
 
     private final UUID functionVersionId;
     private final Path root;
@@ -22,7 +27,7 @@ public final class NodeBuildWorkspace implements AutoCloseable {
     private final String runtimeType;
     private final String runtimeVersion;
 
-    public NodeBuildWorkspace(
+    public BuildWorkspace(
             UUID functionVersionId,
             Path root,
             String entrypoint,

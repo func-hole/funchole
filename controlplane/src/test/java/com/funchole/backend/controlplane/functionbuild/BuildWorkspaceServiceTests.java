@@ -1,4 +1,4 @@
-package com.funchole.backend.controlplane.nodebuild;
+package com.funchole.backend.controlplane.functionbuild;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -37,7 +37,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 @ActiveProfiles("test")
 @Testcontainers
 @Transactional
-class NodeBuildWorkspaceServiceTests {
+class BuildWorkspaceServiceTests {
 
     private static final List<String> FORBIDDEN_TRANSPORT_PACKAGE_PREFIXES = List.of(
             "jakarta.servlet",
@@ -69,7 +69,7 @@ class NodeBuildWorkspaceServiceTests {
     private FunctionVersionLifecycleRegistry lifecycleRegistry;
 
     @Autowired
-    private NodeBuildWorkspaceService buildWorkspaceService;
+    private BuildWorkspaceService buildWorkspaceService;
 
     @Test
     void multiFileSourceMaterializesCorrectly() {
@@ -78,7 +78,7 @@ class NodeBuildWorkspaceServiceTests {
                 new SourceFile("package.json", "{}")
         )));
 
-        try (NodeBuildWorkspace workspace = buildWorkspaceService.prepareWorkspace(functionVersionId)) {
+        try (BuildWorkspace workspace = buildWorkspaceService.prepareWorkspace(functionVersionId)) {
             assertThat(workspace.functionVersionId()).isEqualTo(functionVersionId);
             assertThat(workspace.runtimeType()).isEqualTo("NODE");
             assertThat(workspace.runtimeVersion()).isEqualTo("20");
@@ -95,7 +95,7 @@ class NodeBuildWorkspaceServiceTests {
                 new SourceFile("lib/client.js", "client")
         )));
 
-        try (NodeBuildWorkspace workspace = buildWorkspaceService.prepareWorkspace(functionVersionId)) {
+        try (BuildWorkspace workspace = buildWorkspaceService.prepareWorkspace(functionVersionId)) {
             assertThat(readString(workspace.root().resolve("src/index.js"))).isEqualTo("entry");
             assertThat(readString(workspace.root().resolve("lib/client.js"))).isEqualTo("client");
         }
@@ -106,7 +106,7 @@ class NodeBuildWorkspaceServiceTests {
         UUID functionVersionId = createPublishingVersionWithSource(new SourceBundle("NODE", null, "src/index.js", List.of(
                 new SourceFile("src/index.js", "entry"))));
 
-        try (NodeBuildWorkspace workspace = buildWorkspaceService.prepareWorkspace(functionVersionId)) {
+        try (BuildWorkspace workspace = buildWorkspaceService.prepareWorkspace(functionVersionId)) {
             assertThat(Files.isRegularFile(workspace.entrypointPath())).isTrue();
         }
     }
@@ -164,8 +164,8 @@ class NodeBuildWorkspaceServiceTests {
         UUID versionTwoId = createPublishingVersionWithSource(new SourceBundle("NODE", null, "b.js", List.of(
                 new SourceFile("b.js", "two"))));
 
-        try (NodeBuildWorkspace workspaceOne = buildWorkspaceService.prepareWorkspace(versionOneId);
-             NodeBuildWorkspace workspaceTwo = buildWorkspaceService.prepareWorkspace(versionTwoId)) {
+        try (BuildWorkspace workspaceOne = buildWorkspaceService.prepareWorkspace(versionOneId);
+             BuildWorkspace workspaceTwo = buildWorkspaceService.prepareWorkspace(versionTwoId)) {
             assertThat(workspaceOne.root()).isNotEqualTo(workspaceTwo.root());
             assertThat(Files.exists(workspaceOne.root().resolve("b.js"))).isFalse();
             assertThat(Files.exists(workspaceTwo.root().resolve("a.js"))).isFalse();
@@ -176,7 +176,7 @@ class NodeBuildWorkspaceServiceTests {
     void temporaryWorkspaceCleanupWorks() {
         UUID functionVersionId = createPublishingVersionWithSource(validBundle());
 
-        NodeBuildWorkspace workspace = buildWorkspaceService.prepareWorkspace(functionVersionId);
+        BuildWorkspace workspace = buildWorkspaceService.prepareWorkspace(functionVersionId);
         Path root = workspace.root();
         assertThat(Files.exists(root)).isTrue();
 
@@ -187,15 +187,15 @@ class NodeBuildWorkspaceServiceTests {
 
     @Test
     void applicationServiceHasNoHttpMcpCliDependency() {
-        for (Field field : NodeBuildWorkspaceService.class.getDeclaredFields()) {
+        for (Field field : BuildWorkspaceService.class.getDeclaredFields()) {
             assertTypeIsTransportNeutral(field.getType());
         }
-        for (Constructor<?> constructor : NodeBuildWorkspaceService.class.getDeclaredConstructors()) {
+        for (Constructor<?> constructor : BuildWorkspaceService.class.getDeclaredConstructors()) {
             for (Class<?> parameterType : constructor.getParameterTypes()) {
                 assertTypeIsTransportNeutral(parameterType);
             }
         }
-        for (Method method : NodeBuildWorkspaceService.class.getDeclaredMethods()) {
+        for (Method method : BuildWorkspaceService.class.getDeclaredMethods()) {
             assertTypeIsTransportNeutral(method.getReturnType());
             for (Class<?> parameterType : method.getParameterTypes()) {
                 assertTypeIsTransportNeutral(parameterType);
@@ -235,7 +235,7 @@ class NodeBuildWorkspaceServiceTests {
                 admin,
                 "fn_test_" + UUID.randomUUID().toString().replace("-", ""),
                 "Test Function",
-                "created by NodeBuildWorkspaceServiceTests",
+                "created by BuildWorkspaceServiceTests",
                 "NODE"
         ));
         return functionVersionRepository.save(FunctionVersion.create(function, 1, "NODE", null));
