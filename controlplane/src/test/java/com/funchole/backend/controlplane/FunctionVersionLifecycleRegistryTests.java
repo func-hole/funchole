@@ -260,6 +260,12 @@ class FunctionVersionLifecycleRegistryTests {
             return result;
         }
 
+        @Override
+        public void delete(UUID componentVersionId, String objectKey) {
+            // Not exercised by this test - compensation is covered in
+            // FunctionVersionDeploymentServiceTests.
+        }
+
         int invocationCount() {
             return invocationCount.get();
         }

@@ -7,6 +7,7 @@ import software.amazon.awssdk.core.sync.ResponseTransformer;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.S3Configuration;
+import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
@@ -69,6 +70,18 @@ final class AwsS3ArtifactClient implements S3ArtifactClient {
             );
         } catch (S3Exception exception) {
             throw new IllegalStateException("Failed to upload artifact to S3 key " + key, exception);
+        }
+    }
+
+    @Override
+    public void delete(String key) {
+        try {
+            s3Client.deleteObject(DeleteObjectRequest.builder()
+                    .bucket(bucket)
+                    .key(key)
+                    .build());
+        } catch (S3Exception exception) {
+            throw new IllegalStateException("Failed to delete artifact from S3 key " + key, exception);
         }
     }
 }

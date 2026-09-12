@@ -115,6 +115,35 @@ class S3ArtifactPublisherTest {
         assertTrue(exception.getMessage().contains(S3ArtifactStore.objectKey(componentVersionId)));
     }
 
+    @Test
+    void deleteRemovesThePreviouslyPublishedObject() throws Exception {
+        UUID componentVersionId = UUID.randomUUID();
+        RecordingUploadS3ArtifactClient s3Client = new RecordingUploadS3ArtifactClient(tempDir.resolve("remote"));
+        S3ArtifactPublisher publisher = new S3ArtifactPublisher(s3Client);
+        PublishedArtifact published = publisher.publish(componentVersionId, writePreparedArtifact(componentVersionId));
+        assertTrue(s3Client.hasUploaded(published.objectKey()));
+
+        publisher.delete(componentVersionId, published.objectKey());
+
+        assertTrue(!s3Client.hasUploaded(published.objectKey()));
+    }
+
+    @Test
+    void deleteFailureIsSurfacedClearly() {
+        UUID componentVersionId = UUID.randomUUID();
+        RecordingUploadS3ArtifactClient s3Client = new RecordingUploadS3ArtifactClient(tempDir.resolve("remote"));
+        s3Client.failDeletes();
+        S3ArtifactPublisher publisher = new S3ArtifactPublisher(s3Client);
+        String objectKey = S3ArtifactStore.objectKey(componentVersionId);
+
+        IllegalStateException exception = assertThrows(
+                IllegalStateException.class,
+                () -> publisher.delete(componentVersionId, objectKey)
+        );
+
+        assertTrue(exception.getMessage().contains(objectKey));
+    }
+
     private static String sha256Hex(Path file) throws Exception {
         MessageDigest digest = MessageDigest.getInstance("SHA-256");
         digest.update(Files.readAllBytes(file));
@@ -137,6 +166,7 @@ class S3ArtifactPublisherTest {
         private final Map<String, Path> uploadsByKey = new ConcurrentHashMap<>();
         private String lastUploadedKey;
         private boolean failUploads;
+        private boolean failDeletes;
 
         private RecordingUploadS3ArtifactClient(Path remoteRoot) {
             this.remoteRoot = remoteRoot;
@@ -172,6 +202,14 @@ class S3ArtifactPublisherTest {
             }
         }
 
+        @Override
+        public void delete(String key) {
+            if (failDeletes) {
+                throw new IllegalStateException("Failed to delete artifact from S3 key " + key);
+            }
+            uploadsByKey.remove(key);
+        }
+
         private Path uploadedArchive(String key) {
             return uploadsByKey.get(key);
         }
@@ -190,6 +228,10 @@ class S3ArtifactPublisherTest {
 
         private void failUploads() {
             failUploads = true;
+        }
+
+        private void failDeletes() {
+            failDeletes = true;
         }
     }
 }

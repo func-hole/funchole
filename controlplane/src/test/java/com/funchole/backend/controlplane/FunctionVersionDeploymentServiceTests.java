@@ -152,6 +152,8 @@ class FunctionVersionDeploymentServiceTests {
         FunctionVersion retrieved = functionVersionRepository.findById(functionVersion.getId()).orElseThrow();
         assertThat(retrieved.getStatus()).isEqualTo(FunctionVersionStatus.FAILED);
         assertThat(retrieved.getArtifactMetadata()).isEmpty();
+        // publish() itself failed - there is no PublishedArtifact to compensate for.
+        assertThat(publisher.deletionCount()).isZero();
     }
 
     @Test
@@ -169,6 +171,61 @@ class FunctionVersionDeploymentServiceTests {
         FunctionVersion retrieved = functionVersionRepository.findById(functionVersion.getId()).orElseThrow();
         assertThat(retrieved.getStatus()).isEqualTo(FunctionVersionStatus.FAILED);
         assertThat(retrieved.getArtifactMetadata()).isEmpty();
+        // publish() succeeded first - the now-orphaned remote artifact must be compensated for.
+        assertThat(publisher.deletionCount()).isEqualTo(1);
+        assertThat(publisher.lastDeletedObjectKey()).isEqualTo(objectKey);
+    }
+
+    @Test
+    void successfulDeploymentDoesNotInvokeCompensation() {
+        FunctionVersion functionVersion = createFunctionVersion();
+        String objectKey = FunctionVersionArtifactRegistry.artifactObjectKey(functionVersion.getId());
+        RecordingArtifactPublisher publisher = RecordingArtifactPublisher.returning(
+                new PublishedArtifact(functionVersion.getId(), objectKey, SHA256_A, SIZE_A));
+
+        service(publisher).deploy(functionVersion.getId());
+
+        assertThat(publisher.deletionCount()).isZero();
+    }
+
+    @Test
+    void readyTransitionFailureRemovesThePublishedArtifact() {
+        FunctionVersion functionVersion = createFunctionVersion();
+        String objectKey = FunctionVersionArtifactRegistry.artifactObjectKey(functionVersion.getId());
+        // Forces the version out of PUBLISHING (via a genuine markReady call)
+        // before publish() returns, so the deployment service's OWN later
+        // markReady call - after a successful publish and attach - is the one
+        // that fails, exactly reproducing a post-publish READY-transition failure.
+        RecordingArtifactPublisher publisher = RecordingArtifactPublisher.returningAfterRunning(
+                () -> lifecycleRegistry.markReady(functionVersion.getId()),
+                new PublishedArtifact(functionVersion.getId(), objectKey, SHA256_A, SIZE_A));
+
+        assertThatThrownBy(() -> service(publisher).deploy(functionVersion.getId()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("must be PUBLISHING");
+
+        assertThat(publisher.deletionCount()).isEqualTo(1);
+        assertThat(publisher.lastDeletedObjectKey()).isEqualTo(objectKey);
+    }
+
+    @Test
+    void cleanupFailureIsAddedAsASuppressedExceptionAndOriginalFailureRemainsPrimary() {
+        FunctionVersion functionVersion = createFunctionVersion();
+        String objectKey = FunctionVersionArtifactRegistry.artifactObjectKey(functionVersion.getId());
+        RuntimeException deleteFailure = new IllegalStateException("simulated delete failure");
+        // Same invalid-sha256 trick as artifactMetadataPersistenceFailureEndsFailed:
+        // publish() succeeds, attachPublishedArtifact rejects the write.
+        RecordingArtifactPublisher publisher = RecordingArtifactPublisher.returning(
+                new PublishedArtifact(functionVersion.getId(), objectKey, "not-a-valid-sha256", SIZE_A))
+                .withDeleteFailure(deleteFailure);
+
+        assertThatThrownBy(() -> service(publisher).deploy(functionVersion.getId()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .satisfies(thrown -> assertThat(thrown.getSuppressed()).containsExactly(deleteFailure));
+
+        assertThat(publisher.deletionCount()).isEqualTo(1);
+        assertThat(functionVersionRepository.findById(functionVersion.getId()).orElseThrow().getStatus())
+                .isEqualTo(FunctionVersionStatus.FAILED);
     }
 
     @Test
@@ -440,17 +497,20 @@ class FunctionVersionDeploymentServiceTests {
         private final PublishedArtifact result;
         private final RuntimeException failure;
         private final Supplier<FunctionVersionStatus> statusCapture;
-        private final Runnable beforeThrow;
+        private final Runnable beforeReturnOrThrow;
         private final List<UUID> invocations = new ArrayList<>();
+        private final List<UUID> deletions = new ArrayList<>();
         private FunctionVersionStatus capturedStatus;
         private Path capturedArtifactDirectory;
+        private String lastDeletedObjectKey;
+        private RuntimeException deleteFailure;
 
         private RecordingArtifactPublisher(
-                PublishedArtifact result, RuntimeException failure, Supplier<FunctionVersionStatus> statusCapture, Runnable beforeThrow) {
+                PublishedArtifact result, RuntimeException failure, Supplier<FunctionVersionStatus> statusCapture, Runnable beforeReturnOrThrow) {
             this.result = result;
             this.failure = failure;
             this.statusCapture = statusCapture;
-            this.beforeThrow = beforeThrow;
+            this.beforeReturnOrThrow = beforeReturnOrThrow;
         }
 
         static RecordingArtifactPublisher returning(PublishedArtifact result) {
@@ -469,6 +529,21 @@ class FunctionVersionDeploymentServiceTests {
             return new RecordingArtifactPublisher(result, null, statusCapture, null);
         }
 
+        /**
+         * Publish still succeeds and returns {@code result} normally, but only
+         * after {@code sideEffect} has run - used to force a later lifecycle
+         * step (e.g. markReady) to fail without publish() itself failing, so a
+         * PublishedArtifact genuinely exists by the time that later step does.
+         */
+        static RecordingArtifactPublisher returningAfterRunning(Runnable sideEffect, PublishedArtifact result) {
+            return new RecordingArtifactPublisher(result, null, null, sideEffect);
+        }
+
+        RecordingArtifactPublisher withDeleteFailure(RuntimeException failure) {
+            this.deleteFailure = failure;
+            return this;
+        }
+
         @Override
         public PublishedArtifact publish(UUID componentVersionId, Path preparedArtifactDirectory) {
             invocations.add(componentVersionId);
@@ -476,8 +551,8 @@ class FunctionVersionDeploymentServiceTests {
             if (statusCapture != null) {
                 capturedStatus = statusCapture.get();
             }
-            if (beforeThrow != null) {
-                beforeThrow.run();
+            if (beforeReturnOrThrow != null) {
+                beforeReturnOrThrow.run();
             }
             if (failure != null) {
                 throw failure;
@@ -485,8 +560,25 @@ class FunctionVersionDeploymentServiceTests {
             return result;
         }
 
+        @Override
+        public void delete(UUID componentVersionId, String objectKey) {
+            deletions.add(componentVersionId);
+            lastDeletedObjectKey = objectKey;
+            if (deleteFailure != null) {
+                throw deleteFailure;
+            }
+        }
+
         int invocationCount() {
             return invocations.size();
+        }
+
+        int deletionCount() {
+            return deletions.size();
+        }
+
+        String lastDeletedObjectKey() {
+            return lastDeletedObjectKey;
         }
 
         FunctionVersionStatus statusDuringPublish() {

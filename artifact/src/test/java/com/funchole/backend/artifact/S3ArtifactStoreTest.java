@@ -209,6 +209,11 @@ class S3ArtifactStoreTest {
             throw new UnsupportedOperationException("S3ArtifactStoreTest only supports downloads");
         }
 
+        @Override
+        public void delete(String key) {
+            throw new UnsupportedOperationException("S3ArtifactStoreTest only supports downloads");
+        }
+
         private int downloadCount() {
             return downloadCount.get();
         }

@@ -36,6 +36,17 @@ import java.util.UUID;
  * <p>{@link BuildWorkspace} and {@link PreparedArtifact} are both
  * {@code AutoCloseable}; nesting them in try-with-resources guarantees both
  * are cleaned up whether the build/publish sequence succeeds or fails.
+ *
+ * <p>Once {@link ArtifactPublisher#publish} has returned successfully, the
+ * remote artifact exists whether or not everything after it succeeds. Any
+ * failure past that point (the version-id validation below, metadata
+ * persistence, or the READY transition itself) therefore triggers a
+ * best-effort {@link ArtifactPublisher#delete} of that same artifact, so a
+ * failed deployment does not silently leave an orphaned, untracked object
+ * behind when cleanup is possible. A failure in {@code publish} itself is
+ * never compensated - there is no {@code PublishedArtifact} to reference,
+ * and the existing orphan-on-write-failure gap documented for
+ * {@code attachPublishedArtifact} remains an accepted limitation.
  */
 public class FunctionVersionDeploymentService {
 
@@ -73,13 +84,16 @@ public class FunctionVersionDeploymentService {
         // READY, or FAILED (FAILED stays terminal: no retry path yet).
         FunctionVersion functionVersion = lifecycleRegistry.beginPublishing(functionVersionId);
 
+        // Assigned only once publish() has actually returned a value - the
+        // signal that a remote artifact now exists and, if anything later
+        // fails, needs to be compensated for.
+        PublishedArtifact published = null;
         try {
             try (BuildWorkspace workspace = buildWorkspaceService.prepareWorkspace(functionVersionId)) {
                 RuntimeBuilder runtimeBuilder = runtimeBuilderRegistry.resolve(functionVersion.getRuntime());
 
                 try (PreparedArtifact preparedArtifact = runtimeBuilder.build(workspace)) {
-                    PublishedArtifact published =
-                            artifactPublisher.publish(functionVersionId, preparedArtifact.artifactDirectory());
+                    published = artifactPublisher.publish(functionVersionId, preparedArtifact.artifactDirectory());
 
                     if (!functionVersionId.equals(published.componentVersionId())) {
                         throw new IllegalStateException(
@@ -99,12 +113,19 @@ public class FunctionVersionDeploymentService {
 
             return lifecycleRegistry.markReady(functionVersionId);
         } catch (RuntimeException exception) {
+            if (published != null) {
+                try {
+                    artifactPublisher.delete(functionVersionId, published.objectKey());
+                } catch (RuntimeException deleteException) {
+                    // Same pattern as markFailed below: the original deployment
+                    // failure is what the caller needs to see, not a failure to
+                    // clean up after it.
+                    exception.addSuppressed(deleteException);
+                }
+            }
             try {
                 lifecycleRegistry.markFailed(functionVersionId);
             } catch (RuntimeException markFailedException) {
-                // The original deployment failure is the one the caller needs to
-                // see; a failure recording that failure is secondary information,
-                // not a replacement for it.
                 exception.addSuppressed(markFailedException);
             }
             throw exception;

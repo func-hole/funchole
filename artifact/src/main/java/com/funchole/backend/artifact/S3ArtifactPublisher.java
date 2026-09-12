@@ -74,6 +74,20 @@ public final class S3ArtifactPublisher implements ArtifactPublisher {
         }
     }
 
+    @Override
+    public void delete(UUID componentVersionId, String objectKey) {
+        if (objectKey == null || objectKey.isBlank()) {
+            throw new IllegalArgumentException("objectKey is required");
+        }
+        try {
+            s3Client.delete(objectKey);
+        } catch (RuntimeException exception) {
+            throw new IllegalStateException(
+                    "Failed to delete published artifact for function version " + componentVersionId
+                            + " at key " + objectKey, exception);
+        }
+    }
+
     private Path createTempDirectory(UUID componentVersionId) {
         try {
             return Files.createTempDirectory("funchole-artifact-publish-" + componentVersionId + "-");
