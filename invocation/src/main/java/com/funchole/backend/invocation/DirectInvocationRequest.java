@@ -21,4 +21,13 @@ public record DirectInvocationRequest(
         String runtimeType,
         String inputPayload
 ) {
+
+    /**
+     * The single step key {@link JdbcInvocationRegistry} writes into the
+     * dependency snapshot of every direct FunctionVersion invocation - the
+     * only signal that later distinguishes such an invocation from a normal
+     * Flow invocation, since both are persisted through the exact same
+     * {@code invocations} row shape.
+     */
+    public static final String DIRECT_INVOCATION_STEP_KEY = "invoke-function";
 }

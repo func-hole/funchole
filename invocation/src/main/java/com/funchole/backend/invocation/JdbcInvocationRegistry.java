@@ -92,7 +92,7 @@ public final class JdbcInvocationRegistry implements InvocationRegistry {
     private InvocationSnapshot directInvocationSnapshot(DirectInvocationRequest request) {
         InvocationStepSnapshot invokeFunctionStep = new InvocationStepSnapshot(
                 UUID.randomUUID(),
-                "invoke-function",
+                DirectInvocationRequest.DIRECT_INVOCATION_STEP_KEY,
                 "FUNCTION",
                 1,
                 request.functionId(),
