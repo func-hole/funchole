@@ -78,6 +78,18 @@ public class Function {
         return deletedAt;
     }
 
+    public void update(String name, String description, String runtime) {
+        this.name = name;
+        this.description = description;
+        this.runtime = runtime;
+        this.updatedAt = OffsetDateTime.now();
+    }
+
+    public void softDelete() {
+        this.deletedAt = OffsetDateTime.now();
+        this.updatedAt = OffsetDateTime.now();
+    }
+
     public static Function create(
             AppUser appUser,
             String functionKey,
